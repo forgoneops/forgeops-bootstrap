@@ -1,24 +1,14 @@
-# Caddyfile.template
-#
-# Rendered into docker/Caddyfile by scripts/render_caddyfile.sh, driven by
-# .env (DOMAIN, EXPOSE_PORTAINER, EXPOSE_UPTIME_KUMA). Do not edit
-# docker/Caddyfile by hand — it is regenerated on every install.sh /
-# update.sh run and hand edits will be silently overwritten.
+# Rendered into docker/Caddyfile by scripts/render_caddyfile.sh, based on
+# .env (DOMAIN, EXPOSE_PORTAINER, EXPOSE_UPTIME_KUMA). Don't edit
+# docker/Caddyfile directly — it gets overwritten on the next install.sh
+# or update.sh run.
 
 {
-	# Global options
-	# Admin API bound to localhost only (Caddy's own default) — NOT 0.0.0.0.
-	# The in-container healthcheck (`wget http://localhost:2019/...`) reaches
-	# this fine since it runs inside the same container's network namespace;
-	# binding wider would let every sibling container on forgeops_internal
-	# (Postgres, Redis, Portainer, Uptime Kuma) reconfigure Caddy's routing
-	# if any one of them were ever compromised. See AUDIT.md SEC-1.
+	# Bound to localhost, not 0.0.0.0 — this admin API can rewrite Caddy's
+	# whole config, no reason to expose it to the other containers on
+	# forgeops_internal.
 	admin localhost:2019
 	email admin@{{DOMAIN_OR_LOCALHOST}}
-	# JSON access log to a file (not just stdout/docker logs) bind-mounted to
-	# the host at logs/caddy/access.log, so Fail2Ban's forgeops-caddy-auth
-	# jail can watch it for repeated 401/403 responses against exposed admin
-	# UIs (Portainer/Uptime Kuma) — see AUDIT.md SEC-4.
 	log {
 		output file /var/log/caddy/access.log {
 			roll_size 10mb
@@ -28,15 +18,10 @@
 	}
 }
 
-# Bare-IP / no-domain fallback: plain HTTP health endpoint only, until DOMAIN
-# is set in .env. Nothing else is reachable until a domain is configured.
-# `log` (no args = the default logger defined in the global block above) is
-# included here too, not just on the DOMAIN-gated blocks in
-# render_caddyfile.sh — otherwise logs/caddy/access.log is never created on
-# a bare-IP install, and the forgeops-caddy-auth Fail2Ban jail (whose
-# logpath points at that file) would have nothing to watch from day one
-# regardless of whether a domain is ever configured (AUDIT.md round 2,
-# DOCKER-1).
+# Bare-IP fallback until DOMAIN is set — just a health check, nothing else
+# is reachable. `log` here too so access.log (and the Fail2Ban jail
+# watching it) exists from the first install, not just once a domain and
+# an EXPOSE_* flag are configured.
 :80 {
 	respond /health "ok" 200
 	respond "ForgeOps Bootstrap: no DOMAIN configured in .env yet." 200

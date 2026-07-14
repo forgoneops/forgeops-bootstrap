@@ -1,7 +1,6 @@
 x-logging: &default-logging
-  # Caps unbounded container log growth (AUDIT.md DOCKER-3) — ForgeOps'
-  # own logrotate config only covers logs/*.log, not `docker logs` output,
-  # which otherwise grows without limit on the default json-file driver.
+  # Docker's default json-file driver has no size cap on its own — this
+  # keeps container logs from quietly filling the disk over time.
   driver: json-file
   options:
     max-size: "10m"
@@ -12,7 +11,7 @@ networks:
     name: forgeops_edge
   internal:
     name: forgeops_internal
-    internal: true   # no default route out to the host's public interface
+    internal: true   # no route out to the host's public interface
 
 volumes:
   caddy_data:
@@ -43,8 +42,8 @@ services:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-      # Bind mount (not a named volume) so Fail2Ban on the host can read the
-      # access log directly for the forgeops-caddy-auth jail (AUDIT.md SEC-4).
+      # Bind mount, not a named volume, so Fail2Ban on the host can read
+      # the access log directly.
       - ./logs/caddy:/var/log/caddy
     networks:
       - edge
@@ -68,12 +67,10 @@ services:
       - portainer_data:/data
     networks:
       - internal
-    # wget is present in Portainer's alpine image (busybox-provided) as of
-    # 2.21; if a future base-image change drops it, this healthcheck will
-    # start failing with "exec: wget: not found" in `docker inspect` output
-    # — that's the signal to switch to Portainer's documented alternative.
-    # See AUDIT.md DOCKER-1.
     healthcheck:
+      # If Portainer ever drops wget from its base image this'll start
+      # failing with "exec: wget: not found" — swap to whatever check
+      # they document at that point.
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:9000/api/status"]
       interval: 30s
       timeout: 5s
@@ -86,11 +83,9 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     logging: *default-logging
-    # Scoped environment instead of `env_file: .env` — that would wholesale
-    # inject every secret (including REDIS_PASSWORD) into this container,
-    # violating least privilege (AUDIT.md SEC-2). Compose auto-loads .env
-    # from the project root for ${VAR} substitution in this file already,
-    # so no env_file: directive is needed for that purpose.
+    # Scoped on purpose — env_file: .env would also hand this container
+    # Redis's password for no reason. Compose already reads .env for the
+    # ${VAR} substitution above without needing env_file too.
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -99,7 +94,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - internal
-    # Intentionally no `ports:` mapping — Postgres is never bound to the host.
+    # No ports: mapping — Postgres never touches the host network directly.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 15s
@@ -113,8 +108,6 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     logging: *default-logging
-    # Scoped to just what this container needs (see the postgres comment
-    # above for why `env_file: .env` was replaced — AUDIT.md SEC-2).
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
     command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\""]
@@ -122,7 +115,7 @@ services:
       - redis_data:/data
     networks:
       - internal
-    # Intentionally no `ports:` mapping — Redis is never bound to the host.
+    # Same deal as Postgres — no ports:, stays off the host network.
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 15s
@@ -140,30 +133,22 @@ services:
       - uptime_kuma_data:/app/data
     networks:
       - internal
-    # Uses Uptime Kuma's own documented healthcheck script rather than a
-    # wget-based check — their official Dockerfile ships extra/healthcheck.js
-    # specifically for this purpose, which is the supported mechanism
-    # (see AUDIT.md DOCKER-1: a wget-based check was previously unverified
-    # and Uptime Kuma's own docs use this script instead).
     healthcheck:
+      # Their own image ships extra/healthcheck.js for this — using it
+      # instead of guessing whether wget is available.
       test: ["CMD", "node", "extra/healthcheck.js"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
 
-  # On-demand only: this service is NEVER started by `docker compose up -d`
-  # (install.sh's deploy_docker_stack step lists services explicitly and
-  # omits watchtower). It's invoked exclusively via
-  # `docker compose --profile ondemand run --rm watchtower` from update.sh,
-  # which only restarts containers to pick up images update.sh has already
-  # pulled at the pinned tags in configs/versions.env — it does not poll
-  # upstream registries for new tags itself. `restart: "no"` + the
-  # `ondemand` profile (excluded from the default profile set) are
-  # deliberate: a bare `docker compose up -d` (no explicit service list)
-  # would otherwise start this container, which exits immediately after
-  # --run-once completes, and `unless-stopped` would restart it in a
-  # permanent crash-loop (see AUDIT.md DOCKER-2).
+  # Not started by `docker compose up -d` — deploy_docker_stack lists
+  # services explicitly and leaves this one out. It only runs via
+  # `docker compose --profile ondemand run --rm watchtower` from
+  # update.sh, once, to pick up whatever images were just pulled at the
+  # pinned tags. restart: "no" + the ondemand profile keep it from ever
+  # getting started by a plain `up -d` — otherwise it'd exit right after
+  # --run-once and unless-stopped would just restart it forever.
   watchtower:
     image: ${WATCHTOWER_IMAGE:-containrrr/watchtower:1.7.1}
     container_name: forgeops_watchtower
