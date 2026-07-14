@@ -40,3 +40,10 @@ All notable changes to this repository are documented here. Format loosely follo
 - **SEC-1 (MEDIUM):** `backup.sh`'s Postgres-dump verification now runs `pg_restore --list` via `docker exec` against the already-running `forgeops_postgres` container instead of a hardcoded `postgres:16-alpine` throwaway image, eliminating the one place a Postgres version wasn't read from `configs/versions.env`.
 - **DOCKER-2 (LOW):** `uninstall.sh`'s `docker compose down --remove-orphans` now passes `--profile ondemand` so a leftover Watchtower container from an interrupted run gets cleaned up too.
 - **DOC-1 (LOW):** `SECURITY.md`'s Fail2Ban bullet now states access logging (and the jail's log file) is active from install regardless of `DOMAIN`, matching the DOCKER-1 fix.
+
+### Cleaned up
+
+- Added `.editorconfig`.
+- Rewrote `README.md` — it claimed "four entry points" in a table with seven rows, cut the marketing language, added a real `./verify.sh` output example.
+- Dropped the audit-ticket references that had leaked into inline code comments across `docker-compose.yml`, `templates/Caddyfile.template`, and every script — fine in this changelog, out of place in the code itself.
+- Tightened log and error messages throughout the scripts. No behavior changed; re-verified with `bash -n` and the full smoke suite, plus a standalone repro of the `run_step` fix to make sure trimming its comment didn't touch the actual logic.
