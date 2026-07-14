@@ -1,12 +1,8 @@
 # ForgeOps Bootstrap
 
-Production-grade infrastructure repository for provisioning, configuring, maintaining, migrating, verifying, and updating Ubuntu 24.04 LTS VPS servers (built and tested against OVH VPS) — a single, repeatable, idempotent workflow.
+Scripts to provision, verify, update, migrate, and tear down an Ubuntu 24.04 VPS. Docker-based stack: Caddy, Portainer, PostgreSQL, Redis, Uptime Kuma, Watchtower. Built against OVH VPS but nothing in it is OVH-specific.
 
-See [`PROJECT_SPEC.md`](PROJECT_SPEC.md) for the full specification and [`CLAUDE.md`](CLAUDE.md) for engineering conventions.
-
-## What it installs
-
-Docker + Docker Compose, Git, Python + uv, Node.js LTS, common ops tooling (jq, ripgrep, fzf, tmux, btop, htop, tree, ncdu, rsync), Fail2Ban, UFW, and a Docker-based service stack: Caddy (reverse proxy, automatic HTTPS), Portainer, PostgreSQL, Redis, Uptime Kuma, Watchtower.
+Full spec: [`PROJECT_SPEC.md`](PROJECT_SPEC.md). Contributor notes: [`CLAUDE.md`](CLAUDE.md).
 
 ## Quick start
 
@@ -16,39 +12,58 @@ cd forgeops-bootstrap
 sudo ./install.sh
 ```
 
-`install.sh` is idempotent and resumable — if it fails partway (network blip, apt lock, etc.), fix the underlying issue and re-run it; completed steps are skipped.
+Takes 5-10 minutes on a fresh box. It's safe to re-run if something fails partway — fix whatever broke and run it again, finished steps get skipped.
 
-After install, check health any time:
+Check it worked:
 
 ```bash
 ./verify.sh
 ```
 
-## The four entry points
+Example output on a clean install:
 
-| Command | What it does |
+```
+ForgeOps Bootstrap — Health Report (2026-07-14T12:03:01Z)
+
+  PASS   Operating System     Ubuntu 24.04.1 LTS
+  PASS   Docker               Docker version 27.3.1
+  PASS   Caddy                forgeops_caddy container running
+  PASS   PostgreSQL           forgeops_postgres container running
+  WARN   Claude CLI           claude CLI not found (optional)
+  PASS   Secrets Integrity    .env present, mode 600, no empty required keys
+
+24 passed, 1 warnings, 0 failed
+```
+
+## Commands
+
+| Command | Does |
 | --- | --- |
-| `sudo ./install.sh` | Provisions and configures the complete server |
-| `sudo ./update.sh` | Updates every component to the version pinned in `configs/versions.env` |
-| `./verify.sh` | Validates every installed component, writes console/Markdown/JSON reports |
-| `sudo ./migrate.sh --host user@old-vps --sync` | Migrates an existing VPS into this environment (see [`MIGRATION.md`](MIGRATION.md)) |
-| `sudo ./uninstall.sh` | Removes installed components (add `--purge-data` to also delete stored data, with confirmation) |
-| `./scripts/backup.sh` | Takes a verified backup now (also runs automatically, daily, via `forgeops-backup.timer`) |
-| `./scripts/restore.sh --list` | Lists backups; omit `--list` to restore the most recent one (or `--from <timestamp>`) |
+| `sudo ./install.sh` | Full provision. Idempotent, resumable. |
+| `sudo ./update.sh` | Bumps everything to the versions pinned in `configs/versions.env`. |
+| `./verify.sh` | Health check — console + `logs/verify-report.md` + `logs/verify-report.json`. |
+| `sudo ./migrate.sh --host user@old-vps --sync` | Pull an existing VPS's data onto this one. See [`MIGRATION.md`](MIGRATION.md). |
+| `sudo ./uninstall.sh` | Removes what install.sh set up. Add `--purge-data` to also wipe volumes/backups (asks first). |
+| `./scripts/backup.sh` | Backs up Postgres + Redis + config now. Also runs daily on its own via systemd timer. |
+| `./scripts/restore.sh --list` | Shows available backups. Drop `--list` to restore the latest one. |
 
 ## Configuration
 
-- `configs/versions.env` — every pinned component version. Edit this file, then run `./update.sh`, to upgrade anything.
-- `.env` (git-ignored, generated on first `install.sh` run from `.env.example`) — runtime secrets and per-install settings (`PROJECTS_DIR`, `DOMAIN`, `EXPOSE_PORTAINER`, `EXPOSE_UPTIME_KUMA`, etc.).
+Two files matter:
 
-## Documentation
+- `configs/versions.env` — every pinned version (Docker images, Node, uv). Bump something here, then run `./update.sh`.
+- `.env` — secrets and per-install settings (`DOMAIN`, `PROJECTS_DIR`, `EXPOSE_PORTAINER`, ...). Generated automatically on first `install.sh` run from `.env.example`, with random secrets. Git-ignored — don't commit it.
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — system design, service topology, data flow
-- [`MIGRATION.md`](MIGRATION.md) — step-by-step VPS-to-VPS migration guide
-- [`SECURITY.md`](SECURITY.md) — hardening details, secrets handling, reporting a vulnerability
-- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — common failures and fixes, FAQ
-- [`CLAUDE.md`](CLAUDE.md) — engineering conventions for anyone (human or AI) contributing to this repo
-- [`CHANGELOG.md`](CHANGELOG.md) — release history
+By default nothing except Caddy is reachable from outside. To expose Portainer or Uptime Kuma publicly, set a `DOMAIN` and flip the matching `EXPOSE_*` flag in `.env`, then re-run `install.sh`.
+
+## More docs
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — how the pieces fit together
+- [`MIGRATION.md`](MIGRATION.md) — moving from an old VPS
+- [`SECURITY.md`](SECURITY.md) — what's hardened, what isn't, how to report a vulnerability
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — common failures
+- [`AUDIT.md`](AUDIT.md) — self-audit findings and fixes
+- [`CHANGELOG.md`](CHANGELOG.md)
 
 ## License
 
