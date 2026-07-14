@@ -29,6 +29,10 @@ ForgeOps Bootstrap has two layers:
 
 Docker Compose has no meaningful concept of installing one service independently of rendering the stack it belongs to (a `docker compose up -d <service>` for one service still evaluates and, if needed, creates the shared networks/volumes the whole file defines). `install.sh`'s `deploy_docker_stack` step therefore covers the "Install Portainer / Install PostgreSQL / Install Redis / Install Uptime Kuma" spec items as one idempotent `docker compose up -d` call. Caddy is pulled and started in the same step; Watchtower is invoked on-demand by `update.sh` rather than run as a long-lived polling daemon, so upgrades only ever happen when `update.sh` explicitly pulls new pinned images — nothing auto-updates itself against upstream `latest` tags.
 
+## Alpine base image caveat
+
+`configs/versions.env` pins `postgres:16.4-alpine` and `redis:7.4-alpine`. Alpine's musl libc (vs. glibc on Debian-based images) has a known operational caveat specifically for Postgres: locale/collation handling can differ from glibc, and collation-version mismatches across base-image updates can require a `REINDEX` on collation-sensitive indexes. This doesn't affect the default `C`/`POSIX` collation, but if you use a locale-aware collation for text columns, be aware of it before relying on Alpine long-term — switching `POSTGRES_IMAGE` to the Debian-based `postgres:16.4` tag in `configs/versions.env` avoids the caveat entirely at the cost of a larger image.
+
 ## Versioning
 
 `configs/versions.env` is the single file that pins every component's version (container image tags, Node major line, `uv` release, Docker's apt channel). `install.sh` and `update.sh` both read it and never move a component to a version that isn't declared there. Bumping a version is a one-line, reviewable edit to that file, followed by `./update.sh`.

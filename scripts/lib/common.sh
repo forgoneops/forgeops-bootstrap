@@ -93,6 +93,13 @@ state_reset() {
 # Runs $2.. as a named, idempotent, resumable step. The step function itself
 # must be safe to call when already applied (e.g. `apt install -y` is already
 # idempotent; custom steps must self-check before mutating state).
+#
+# A step function may return exit code 75 (EX_TEMPFAIL) instead of 0 to mean
+# "succeeded, but in a deliberately deferred/incomplete state — do not cache
+# this as done, retry it on the next install.sh run." Used by steps whose
+# full behavior depends on external state that may appear later (e.g. SSH
+# hardening waiting on an authorized_keys file). Any other non-zero exit is
+# a real failure and aborts the install.
 run_step() {
   local step="$1"; shift
   if state_is_done "${step}"; then
@@ -100,11 +107,31 @@ run_step() {
     return 0
   fi
   log_info "Running step: ${step}"
-  if "$@"; then
+  local rc=0
+  "$@" || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
     state_mark_done "${step}"
     log_ok "Completed step: ${step}"
+  elif [[ "${rc}" -eq 75 ]]; then
+    log_warn "Step '${step}' left in a deferred state — it will run again on the next install.sh invocation until fully satisfied."
   else
-    die "Step '${step}' failed. Fix the error above and re-run install.sh — completed steps will be skipped."
+    die "Step '${step}' failed (exit ${rc}). Fix the error above and re-run install.sh — completed steps will be skipped."
+  fi
+}
+
+# Runs $2.. every time, never gated by the state file. Use for steps that
+# are already cheaply idempotent on their own (e.g. `docker compose up -d`)
+# where caching would prevent picking up legitimate config changes (like a
+# new EXPOSE_* flag in .env) on a plain re-run of install.sh.
+run_step_always() {
+  local step="$1"; shift
+  log_info "Running step: ${step} (always re-evaluated, not state-cached)"
+  local rc=0
+  "$@" || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    log_ok "Completed step: ${step}"
+  else
+    die "Step '${step}' failed (exit ${rc}). Fix the error above and re-run install.sh."
   fi
 }
 

@@ -11,6 +11,12 @@ REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
   [[ "$output" == *"install_docker"* ]]
 }
 
+@test "install.sh --dry-run marks deploy_docker_stack as always-run (IDEM-3 fix)" {
+  run bash "${REPO_ROOT}/install.sh" --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"deploy_docker_stack (always)"* ]]
+}
+
 @test "install.sh --help exits 0" {
   run bash "${REPO_ROOT}/install.sh" --help
   [ "$status" -eq 0 ]

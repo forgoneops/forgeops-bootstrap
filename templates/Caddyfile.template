@@ -7,8 +7,25 @@
 
 {
 	# Global options
-	admin 0.0.0.0:2019
+	# Admin API bound to localhost only (Caddy's own default) — NOT 0.0.0.0.
+	# The in-container healthcheck (`wget http://localhost:2019/...`) reaches
+	# this fine since it runs inside the same container's network namespace;
+	# binding wider would let every sibling container on forgeops_internal
+	# (Postgres, Redis, Portainer, Uptime Kuma) reconfigure Caddy's routing
+	# if any one of them were ever compromised. See AUDIT.md SEC-1.
+	admin localhost:2019
 	email admin@{{DOMAIN_OR_LOCALHOST}}
+	# JSON access log to a file (not just stdout/docker logs) bind-mounted to
+	# the host at logs/caddy/access.log, so Fail2Ban's forgeops-caddy-auth
+	# jail can watch it for repeated 401/403 responses against exposed admin
+	# UIs (Portainer/Uptime Kuma) — see AUDIT.md SEC-4.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+		format json
+	}
 }
 
 # Bare-IP / no-domain fallback: plain HTTP health endpoint only, until DOMAIN

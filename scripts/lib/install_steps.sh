@@ -90,7 +90,7 @@ step_install_caddy() {
 
 step_create_project_directories() {
   local projects_dir="${PROJECTS_DIR:-/opt/forgeops/projects}"
-  mkdir -p "${projects_dir}" "${REPO_ROOT}/backups" "${REPO_ROOT}/logs"
+  mkdir -p "${projects_dir}" "${REPO_ROOT}/backups" "${REPO_ROOT}/logs" "${REPO_ROOT}/logs/caddy"
   chmod 750 "${projects_dir}"
 }
 
@@ -184,8 +184,15 @@ step_configure_ssh_security() {
 # ForgeOps: password auth left enabled — no SSH key detected yet.
 PermitRootLogin prohibit-password
 EOF
-  else
-    cat >"${sshd_config}" <<'EOF'
+    sshd -t || die "Generated sshd config is invalid — aborting before reload."
+    systemctl reload ssh
+    # Exit 75 (not 0): tells run_step this succeeded but is deliberately
+    # deferred — do not cache as done, so the next plain `install.sh` run
+    # re-checks for a key instead of silently no-op'ing (see AUDIT.md IDEM-1).
+    return 75
+  fi
+
+  cat >"${sshd_config}" <<'EOF'
 # ForgeOps SSH hardening — applied because at least one authorized_keys file
 # was verified present at install time.
 PasswordAuthentication no
@@ -195,13 +202,17 @@ MaxAuthTries 4
 ClientAliveInterval 300
 ClientAliveCountMax 2
 EOF
-  fi
   sshd -t || die "Generated sshd config is invalid — aborting before reload."
   systemctl reload ssh
 }
 
 step_configure_firewall() {
-  ufw --force reset
+  # Deliberately no `ufw --force reset` here: a blanket reset would wipe any
+  # rule the operator added by hand for an unrelated purpose every time this
+  # step is forced to re-run (see AUDIT.md IDEM-2). `ufw default` and
+  # `ufw allow` are each independently idempotent — setting a default policy
+  # or adding a rule that already exists is a no-op, so this step only ever
+  # adds what ForgeOps needs without touching anything else.
   ufw default deny incoming
   ufw default allow outgoing
   ufw allow OpenSSH
@@ -220,6 +231,29 @@ maxretry = 5
 bantime = 1h
 findtime = 10m
 EOF
+
+  # Protects exposed admin UIs (Portainer/Uptime Kuma, via EXPOSE_*) once
+  # Caddy is logging to a file — see AUDIT.md SEC-4. Harmless/no-op if
+  # nothing is ever exposed: the jail just never matches anything in an
+  # access log full of 200s.
+  cat >/etc/fail2ban/filter.d/forgeops-caddy-auth.conf <<'EOF'
+# Matches Caddy's JSON access log (format json) for repeated 401/403
+# responses, e.g. failed logins against an exposed Portainer/Uptime Kuma.
+[Definition]
+failregex = "remote_ip":"<HOST>".*"status":(401|403)
+ignoreregex =
+EOF
+
+  cat >/etc/fail2ban/jail.d/forgeops-caddy.local <<EOF
+[forgeops-caddy-auth]
+enabled = true
+filter = forgeops-caddy-auth
+logpath = ${REPO_ROOT}/logs/caddy/access.log
+maxretry = 8
+bantime = 1h
+findtime = 10m
+EOF
+
   systemctl restart fail2ban
 }
 

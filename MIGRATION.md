@@ -47,12 +47,14 @@ sudo ./migrate.sh --host deploy@old-vps.example.com --finalize --volumes
 
 1. Prompts for a typed `finalize` confirmation (this is the one destructive-adjacent step in the whole tool).
 2. Stops only the migrated containers on the source (`docker compose stop postgres redis portainer uptime-kuma`) — nothing is deleted, and non-migrated services on the source are untouched.
-3. Runs one last `--sync` delta pass to catch anything written between step 1 and now.
-4. Verifies data integrity via a SHA-256 checksum manifest comparison (not just file size/count) between source and destination.
+3. Runs one last `--sync` delta pass to catch anything written between step 1 and now — this pass now checksums each Docker volume's transferred archive (not just `--projects`, which was the only thing verified in earlier versions of this tool) and records a per-volume OK/FAILED/SKIPPED status.
+4. Verifies data integrity: for `--projects`, a SHA-256 manifest comparison between source and destination; for `--volumes` (mandatory for `--finalize`), confirms every volume present on the source synced with a matching checksum — if zero volumes verified OK, or any volume failed, this counts as a verification failure even if `--projects` matched.
 5. **Only if verification passes**, starts the destination's Postgres/Redis/Portainer/Uptime Kuma containers.
 6. If verification fails, it aborts before starting anything on the destination and tells you to run `--rollback`.
 
 The source host is never deleted from, force-shut-down, or decommissioned by this tool — after a successful `--finalize` its containers are simply stopped. Decommissioning the source is a manual step you take once you've confirmed the destination is healthy.
+
+**Expect a brief service gap on the source.** `--finalize` stops the source's Postgres/Redis/Portainer/Uptime Kuma, but its Caddy instance keeps running and may keep routing public traffic to those now-stopped backends until you manually point DNS at the destination (see "After a successful migration," below). Minimize this window by lowering your DNS record's TTL well before you plan to finalize, and by having the DNS change ready to apply immediately after `--finalize` reports success.
 
 ## Rollback
 

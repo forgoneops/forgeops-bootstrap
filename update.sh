@@ -70,7 +70,13 @@ fi
 log_ok "Containers recreated at pinned versions."
 
 # --- 5. Run watchtower once to clean up any dangling images from the recreate
-docker compose run --rm watchtower --cleanup --run-once >/dev/null 2>&1 || true
+# --profile ondemand is required: watchtower is profile-gated in
+# docker-compose.yml specifically so a bare `up -d` never starts it (see
+# AUDIT.md DOCKER-2) — `docker compose run` also respects profile gating.
+# No extra args passed to `run`: they would override (not append to) the
+# service's declared `command:`, silently dropping --no-startup-message
+# (see AUDIT.md SC-1) — relying on the compose file's own command instead.
+docker compose --profile ondemand run --rm watchtower >/dev/null 2>&1 || true
 
 # --- 6. Prune unused Docker resources ------------------------------------------
 docker image prune -f >/dev/null

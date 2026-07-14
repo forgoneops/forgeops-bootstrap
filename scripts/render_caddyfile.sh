@@ -36,6 +36,7 @@ portainer.${DOMAIN} {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
+	log
 }
 EOF
     fi
@@ -50,6 +51,7 @@ status.${DOMAIN} {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
+	log
 }
 EOF
     fi

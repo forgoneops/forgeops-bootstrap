@@ -50,7 +50,11 @@ mkdir -p "${BACKUP_DIR}/config"
 # --- 1. PostgreSQL: pg_dump in custom format (supports pg_restore --list verification) ---
 if docker ps --filter "name=forgeops_postgres" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_postgres; then
   log_info "Dumping PostgreSQL database '${POSTGRES_DB}'..."
-  if ! docker exec forgeops_postgres pg_dump -U "${POSTGRES_USER}" -Fc "${POSTGRES_DB}" >"${BACKUP_DIR}/postgres.dump"; then
+  # PGPASSWORD set explicitly rather than relying on the image's default
+  # local-socket trust auth (AUDIT.md SEC-6) — works either way today, but
+  # this makes the auth path explicit instead of an implicit dependency on
+  # an upstream default that could change.
+  if ! docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres pg_dump -U "${POSTGRES_USER}" -Fc "${POSTGRES_DB}" >"${BACKUP_DIR}/postgres.dump"; then
     rm -rf "${BACKUP_DIR}"
     die "pg_dump failed — backup aborted, no partial backup left behind."
   fi
@@ -61,10 +65,13 @@ fi
 # --- 2. Redis: trigger BGSAVE, wait for it to complete, then copy the RDB file ---
 if docker ps --filter "name=forgeops_redis" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_redis; then
   log_info "Snapshotting Redis..."
-  before_save="$(docker exec forgeops_redis redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning LASTSAVE)"
-  docker exec forgeops_redis redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning BGSAVE >/dev/null
+  # REDISCLI_AUTH (not -a) keeps the password out of argv — `-a` is visible
+  # to any local user via `docker top`/`ps aux` while the command runs
+  # (AUDIT.md SEC-5).
+  before_save="$(docker exec -e REDISCLI_AUTH="${REDIS_PASSWORD}" forgeops_redis redis-cli --no-auth-warning LASTSAVE)"
+  docker exec -e REDISCLI_AUTH="${REDIS_PASSWORD}" forgeops_redis redis-cli --no-auth-warning BGSAVE >/dev/null
   waited=0
-  while [[ "$(docker exec forgeops_redis redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning LASTSAVE)" == "${before_save}" ]]; do
+  while [[ "$(docker exec -e REDISCLI_AUTH="${REDIS_PASSWORD}" forgeops_redis redis-cli --no-auth-warning LASTSAVE)" == "${before_save}" ]]; do
     sleep 1
     waited=$((waited + 1))
     if [[ "${waited}" -ge 60 ]]; then

@@ -89,22 +89,48 @@ log_ok "Backup verified."
 RESTORE_DIR="${WORK_DIR}/${TIMESTAMP}"
 
 if [[ -f "${RESTORE_DIR}/postgres.dump" ]]; then
-  log_info "Restoring PostgreSQL..."
+  log_info "Restoring PostgreSQL (atomic: restores into a shadow database first, only swaps it into place once pg_restore succeeds — AUDIT.md SEC-3)..."
   docker compose -f "${REPO_ROOT}/docker-compose.yml" stop postgres
   docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d postgres
-  # Wait for Postgres to accept connections before dropping/recreating.
+  # Wait for Postgres to accept connections before touching anything.
   for _ in $(seq 1 30); do
     docker exec forgeops_postgres pg_isready -U "${POSTGRES_USER}" >/dev/null 2>&1 && break
     sleep 1
   done
-  docker exec forgeops_postgres dropdb -U "${POSTGRES_USER}" --if-exists "${POSTGRES_DB}"
-  docker exec forgeops_postgres createdb -U "${POSTGRES_USER}" "${POSTGRES_DB}"
+
+  shadow_db="${POSTGRES_DB}_restoring"
+  prerestore_db="${POSTGRES_DB}_prerestore_$(date -u +%Y%m%dT%H%M%SZ)"
+
+  # PGPASSWORD set explicitly rather than relying on local-socket trust auth
+  # defaults (AUDIT.md SEC-6).
+  # Clean up any shadow DB left over from a previous failed attempt, then
+  # restore into a FRESH database that is not yet the live one.
+  docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres dropdb -U "${POSTGRES_USER}" --if-exists "${shadow_db}"
+  docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres createdb -U "${POSTGRES_USER}" "${shadow_db}"
   docker cp "${RESTORE_DIR}/postgres.dump" forgeops_postgres:/tmp/restore.dump
-  if ! docker exec forgeops_postgres pg_restore -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" /tmp/restore.dump; then
-    die "pg_restore reported errors — inspect the database manually before trusting it. The pre-restore database was already dropped; there is no automatic rollback for this step (see MIGRATION.md's rollback model, which does not cover this destructive local restore path)."
+
+  if ! docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres pg_restore -U "${POSTGRES_USER}" -d "${shadow_db}" /tmp/restore.dump; then
+    docker exec forgeops_postgres rm -f /tmp/restore.dump
+    docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres dropdb -U "${POSTGRES_USER}" --if-exists "${shadow_db}"
+    die "pg_restore reported errors restoring into a shadow database — the live '${POSTGRES_DB}' database was NEVER touched. Inspect the archive and retry."
   fi
   docker exec forgeops_postgres rm -f /tmp/restore.dump
-  log_ok "PostgreSQL restored."
+
+  # Swap: terminate connections to both DBs, rename the live DB out of the
+  # way (kept, not dropped — a safety net), then promote the verified
+  # shadow DB into the live name.
+  docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres psql -U "${POSTGRES_USER}" -d postgres -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('${POSTGRES_DB}','${shadow_db}') AND pid <> pg_backend_pid();" >/dev/null
+  if docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres psql -U "${POSTGRES_USER}" -d postgres -tAc \
+      "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'" | grep -q 1; then
+    docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres psql -U "${POSTGRES_USER}" -d postgres -c \
+      "ALTER DATABASE \"${POSTGRES_DB}\" RENAME TO \"${prerestore_db}\";" >/dev/null
+  fi
+  if ! docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" forgeops_postgres psql -U "${POSTGRES_USER}" -d postgres -c \
+      "ALTER DATABASE \"${shadow_db}\" RENAME TO \"${POSTGRES_DB}\";" >/dev/null; then
+    die "Restore succeeded into a shadow database but the final rename failed. The restored data is safe in database '${shadow_db}'; the pre-restore database (if it existed) was renamed to '${prerestore_db}'. Manual intervention required — nothing was silently lost."
+  fi
+  log_ok "PostgreSQL restored. Previous database preserved as '${prerestore_db}' — drop it manually once you've confirmed the restore is good."
 fi
 
 if [[ -f "${RESTORE_DIR}/redis-dump.rdb" ]]; then

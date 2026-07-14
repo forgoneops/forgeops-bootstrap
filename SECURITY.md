@@ -12,6 +12,10 @@ ForgeOps Bootstrap assumes an internet-facing Ubuntu VPS with root SSH access, r
 - **Automatic security updates:** `unattended-upgrades` enabled for OS security patches (see `PROJECT_SPEC.md`'s Versioning & Pinning Policy for what is and isn't auto-updated).
 - **Network isolation:** PostgreSQL and Redis are attached only to the `forgeops_internal` Docker network (`internal: true`, no route to the host's public interface) and never receive a `ports:` mapping — there is no compose-level way to accidentally expose them.
 - **No public-by-default admin surfaces:** Portainer and Uptime Kuma require an explicit opt-in (`EXPOSE_PORTAINER=true` / `EXPOSE_UPTIME_KUMA=true` in `.env`) before Caddy gives them a public route.
+- **Caddy admin API:** bound to `localhost:2019` inside the Caddy container (not `0.0.0.0`) — reachable only from within that container, not from sibling containers on `forgeops_internal` or the network at large.
+- **Least-privilege container environments:** Postgres and Redis each receive only the specific environment variables they need (via scoped `environment:` blocks), not every secret in `.env` wholesale.
+- **Brute-force protection on exposed admin UIs:** when `EXPOSE_PORTAINER`/`EXPOSE_UPTIME_KUMA` is enabled, Caddy logs access (JSON, bind-mounted to `logs/caddy/access.log`) and a second Fail2Ban jail (`forgeops-caddy-auth`) bans IPs after repeated 401/403 responses — not just the SSH jail.
+- **Resource limits:** every container has a `mem_limit` and a capped `json-file` log driver (`max-size: 10m`, `max-file: 3`), so a runaway container can't OOM the host or fill the disk with unbounded logs.
 
 ## Secrets
 
@@ -20,6 +24,9 @@ ForgeOps Bootstrap assumes an internet-facing Ubuntu VPS with root SSH access, r
 - No script, Dockerfile, or compose file contains a literal credential. Everything flows in via `env_file: .env` / `${VAR}` interpolation.
 - `verify.sh`'s secrets-integrity check confirms presence, correct permissions, and non-empty required keys — it never prints a secret value to console, logs, or reports.
 - External secret managers (Vault, SOPS, cloud KMS) are intentionally out of scope for v1; see `ARCHITECTURE.md` for why the current design doesn't block adding one later.
+- `scripts/backup.sh`/`scripts/restore.sh` set `PGPASSWORD`/`REDISCLI_AUTH` explicitly for every Postgres/Redis CLI invocation rather than relying on the Postgres image's default local-socket trust auth or passing the Redis password as a `-a` CLI argument (which would be visible via `docker top`/`ps aux` to any local user).
+- **Backups contain secrets, unencrypted:** `scripts/backup.sh` includes a copy of `.env` inside each archive (needed to restore a fully-working stack). The archive file itself is `chmod 600`, but its *contents* are not encrypted — anyone who obtains a backup archive gets every secret in plaintext. Treat `backups/*.tar.gz` with the same sensitivity as `.env` itself.
+- **Backups are local-only in v1:** `scripts/backup.sh` writes to `backups/` on the same disk as the live data. This is not an offsite/3-2-1 backup strategy — a lost or destroyed VPS takes its backups with it. Offsite replication (e.g. periodic sync to remote object storage) is a Future Extension, not yet implemented.
 
 ## Reporting a vulnerability
 

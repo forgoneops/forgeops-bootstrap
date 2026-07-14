@@ -90,7 +90,12 @@ if [[ "${MODE}" != "rollback" ]]; then
 fi
 
 remote_projects_dir() {
-  ssh "${HOST}" 'test -f "${HOME}/.env" && grep -E "^PROJECTS_DIR=" "${HOME}/.env" | cut -d= -f2- || echo /opt/forgeops/projects'
+  # Must read the source's PROJECTS_DIR from its ForgeOps repo's .env, not
+  # from $HOME/.env (which is almost never where it lives) — see AUDIT.md
+  # MIG-1. Every other remote lookup in this script already uses
+  # SOURCE_REPO_PATH; this one had been missed.
+  local repo_path="${SOURCE_REPO_PATH:-${SOURCE_REPO_PATH_DEFAULT}}"
+  ssh "${HOST}" "test -f '${repo_path}/.env' && grep -E '^PROJECTS_DIR=' '${repo_path}/.env' | cut -d= -f2- || echo /opt/forgeops/projects"
 }
 
 # ---------------------------------------------------------------------------
@@ -132,21 +137,54 @@ do_sync() {
   fi
 
   if [[ "${DO_VOLUMES}" -eq 1 ]]; then
+    # Fresh status file every do_sync call: one line per volume, OK/FAILED/
+    # SKIPPED, so do_finalize can tell real verification from a no-op (see
+    # AUDIT.md MIG-2/MIG-3 — previously a failed scp/tar was logged as
+    # success, and volumes were never checksummed at all).
+    local status_file="${LOG_DIR}/.migrate-volume-status"
+    : >"${status_file}"
     for vol in postgres redis portainer uptime_kuma; do
       log_info "Syncing Docker volume data for ${vol} (live snapshot; source containers keep running)..."
       if [[ "${DRY_RUN}" -eq 1 ]]; then
-        log_info "[dry-run] would tar forgeops_${vol}_data on ${HOST} and extract into forgeops_${vol}_data here"
+        log_info "[dry-run] would tar forgeops_${vol}_data on ${HOST}, transfer, checksum-verify, and extract into forgeops_${vol}_data here"
         continue
       fi
-      ssh "${HOST}" "docker run --rm -v forgeops_${vol}_data:/from -v /tmp:/to alpine tar czf /to/forgeops_${vol}_data.tar.gz -C /from ." \
-        || { log_warn "Volume forgeops_${vol}_data not found on source — skipping."; continue; }
-      scp "${HOST}:/tmp/forgeops_${vol}_data.tar.gz" "${LOG_DIR}/"
-      ssh "${HOST}" "rm -f /tmp/forgeops_${vol}_data.tar.gz"
+
+      local remote_sha
+      remote_sha="$(ssh "${HOST}" "docker run --rm -v forgeops_${vol}_data:/from -v /tmp:/to alpine sh -c 'tar czf /to/forgeops_${vol}_data.tar.gz -C /from . && sha256sum /to/forgeops_${vol}_data.tar.gz'" 2>/dev/null | awk '{print $1}')"
+      if [[ -z "${remote_sha}" ]]; then
+        log_warn "Volume forgeops_${vol}_data not found on source (or remote tar failed) — skipping."
+        echo "${vol}:SKIPPED:not present or tar failed on source" >>"${status_file}"
+        continue
+      fi
+
+      if ! scp -q "${HOST}:/tmp/forgeops_${vol}_data.tar.gz" "${LOG_DIR}/"; then
+        log_error "scp failed for forgeops_${vol}_data.tar.gz — volume NOT synced."
+        echo "${vol}:FAILED:scp transfer failed" >>"${status_file}"
+        ssh "${HOST}" "rm -f /tmp/forgeops_${vol}_data.tar.gz" 2>/dev/null || true
+        continue
+      fi
+      ssh "${HOST}" "rm -f /tmp/forgeops_${vol}_data.tar.gz" 2>/dev/null || true
+
+      local local_sha
+      local_sha="$(sha256sum "${LOG_DIR}/forgeops_${vol}_data.tar.gz" 2>/dev/null | awk '{print $1}')"
+      if [[ "${local_sha}" != "${remote_sha}" ]]; then
+        log_error "Checksum mismatch for forgeops_${vol}_data.tar.gz (remote=${remote_sha} local=${local_sha:-<missing>}) — volume NOT synced. Archive kept at ${LOG_DIR}/forgeops_${vol}_data.tar.gz for inspection."
+        echo "${vol}:FAILED:checksum mismatch after transfer" >>"${status_file}"
+        continue
+      fi
+
       docker volume create "forgeops_${vol}_data" >/dev/null
-      docker run --rm -v "forgeops_${vol}_data:/to" -v "${LOG_DIR}:/from" alpine \
-        sh -c "tar xzf /from/forgeops_${vol}_data.tar.gz -C /to"
+      if ! docker run --rm -v "forgeops_${vol}_data:/to" -v "${LOG_DIR}:/from" alpine \
+          sh -c "tar xzf /from/forgeops_${vol}_data.tar.gz -C /to"; then
+        log_error "Extraction failed for forgeops_${vol}_data — volume NOT synced."
+        echo "${vol}:FAILED:local extraction failed" >>"${status_file}"
+        rm -f "${LOG_DIR}/forgeops_${vol}_data.tar.gz"
+        continue
+      fi
       rm -f "${LOG_DIR}/forgeops_${vol}_data.tar.gz"
-      log_ok "Volume forgeops_${vol}_data synced (live snapshot — see --finalize for a consistent final copy)."
+      echo "${vol}:OK:${local_sha}" >>"${status_file}"
+      log_ok "Volume forgeops_${vol}_data synced and checksum-verified (sha256=${local_sha:0:12}...) — live snapshot, see --finalize for a consistent final copy."
     done
   fi
 
@@ -176,6 +214,8 @@ do_finalize() {
 
   log_info "Verifying checksums between source and destination..."
   local mismatch=0
+  local verified_summary=""
+
   if [[ "${DO_PROJECTS}" -eq 1 ]]; then
     local src_projects dst_projects
     src_projects="$(remote_projects_dir)"
@@ -186,14 +226,46 @@ do_finalize() {
     if [[ "${src_sum}" != "${dst_sum}" ]]; then
       log_error "Checksum mismatch for projects: source=${src_sum} dest=${dst_sum}"
       mismatch=1
+    else
+      verified_summary+="projects "
     fi
   fi
+
+  # --volumes is mandatory for --finalize (checked at the top of this
+  # function) — its per-volume status was written by the do_sync call above.
+  # Previously this block never inspected volume results at all, so a
+  # `--finalize --volumes` run with no --projects would print "verified"
+  # having checked nothing (AUDIT.md MIG-2). Every volume present on the
+  # source must have synced OK; a FAILED line is a hard stop.
+  local status_file="${LOG_DIR}/.migrate-volume-status"
+  local ok_volumes=() failed_volumes=() skipped_volumes=()
+  if [[ -f "${status_file}" ]]; then
+    while IFS=: read -r vol result _detail; do
+      case "${result}" in
+        OK) ok_volumes+=("${vol}") ;;
+        FAILED) failed_volumes+=("${vol}"); mismatch=1 ;;
+        SKIPPED) skipped_volumes+=("${vol}") ;;
+      esac
+    done <"${status_file}"
+  else
+    mismatch=1
+    log_error "No volume status file found at ${status_file} — the final sync pass did not record any volume results."
+  fi
+
+  if (( ${#ok_volumes[@]} == 0 )); then
+    log_error "Zero volumes verified OK (source may have had none running, or every transfer failed) — refusing to treat this as a verified finalize."
+    mismatch=1
+  else
+    verified_summary+="volumes:[${ok_volumes[*]}] "
+  fi
+  (( ${#skipped_volumes[@]} > 0 )) && log_warn "Volumes skipped (not present on source): ${skipped_volumes[*]}"
+  (( ${#failed_volumes[@]} > 0 )) && log_error "Volumes that FAILED to sync/verify: ${failed_volumes[*]}"
 
   if [[ "${mismatch}" -eq 1 ]]; then
     echo "verify_failed" >>"${MIGRATION_STATE}"
     die "Checksum verification FAILED. Destination services were NOT started. Source containers remain stopped — run './migrate.sh --host ${HOST} --rollback' to restart them, then investigate the mismatch before retrying."
   fi
-  log_ok "Checksums verified — source and destination match."
+  log_ok "Checksums verified — source and destination match (${verified_summary})."
   echo "verified" >>"${MIGRATION_STATE}"
 
   log_info "Starting destination stack..."

@@ -53,7 +53,7 @@ echo "  - docker compose stack (containers): caddy, portainer, postgres, redis, 
 echo "  - Docker images pinned in configs/versions.env"
 echo "  - Docker networks: forgeops_edge, forgeops_internal"
 echo "  - UFW rules added by install.sh (80/tcp, 443/tcp, 443/udp)"
-echo "  - Fail2Ban jail: /etc/fail2ban/jail.d/forgeops-sshd.local"
+echo "  - Fail2Ban jails: forgeops-sshd.local, forgeops-caddy.local (+ its filter)"
 echo "  - logrotate config: /etc/logrotate.d/forgeops"
 echo "  - systemd units: forgeops-backup.timer, forgeops-backup.service"
 echo ""
@@ -99,8 +99,8 @@ ufw delete allow 80/tcp >/dev/null 2>&1 || true
 ufw delete allow 443/tcp >/dev/null 2>&1 || true
 ufw delete allow 443/udp >/dev/null 2>&1 || true
 
-log_info "Removing Fail2Ban jail and logrotate config..."
-rm -f /etc/fail2ban/jail.d/forgeops-sshd.local
+log_info "Removing Fail2Ban jails and logrotate config..."
+rm -f /etc/fail2ban/jail.d/forgeops-sshd.local /etc/fail2ban/jail.d/forgeops-caddy.local /etc/fail2ban/filter.d/forgeops-caddy-auth.conf
 systemctl restart fail2ban 2>/dev/null || true
 rm -f /etc/logrotate.d/forgeops
 
