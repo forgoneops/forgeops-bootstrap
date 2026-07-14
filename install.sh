@@ -44,7 +44,7 @@ STEPS=(
   configure_locale:step_configure_locale:cached
   configure_timezone:step_configure_timezone:cached
   install_base_packages:step_install_base_packages:cached
-  install_uv:step_install_uv:cached
+  install_uv:step_install_uv:always
   install_nodejs:step_install_nodejs:cached
   install_docker:step_install_docker:cached
   verify_docker_compose:step_verify_docker_compose:cached
