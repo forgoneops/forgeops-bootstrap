@@ -37,7 +37,7 @@ step_install_uv() {
     log_info "uv already installed ($(uv --version))"
     return 0
   fi
-  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin sh
+  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local sh
 }
 
 step_install_nodejs() {
