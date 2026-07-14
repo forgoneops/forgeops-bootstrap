@@ -1,0 +1,15 @@
+# Force LF line endings for everything script-related, regardless of the
+# checkout platform's core.autocrlf setting. CRLF in a shebang line breaks
+# execution on the Ubuntu target (`/usr/bin/env bash^M: bad interpreter`).
+*.sh text eol=lf
+*.bats text eol=lf
+*.env text eol=lf
+Caddyfile* text eol=lf
+docker-compose.yml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.jsonc text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+LICENSE text eol=lf
