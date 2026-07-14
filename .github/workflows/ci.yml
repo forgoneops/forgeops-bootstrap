@@ -1,0 +1,42 @@
+name: ci-quality-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck on every .sh file
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' f; do
+            echo "::group::shellcheck $f"
+            shellcheck -x "$f" || fail=1
+            echo "::endgroup::"
+          done < <(find . -type f -name '*.sh' -not -path './.git/*' -print0)
+          exit "$fail"
+
+  markdownlint:
+    name: Markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v18
+        with:
+          globs: '**/*.md'
+
+  compose-validate:
+    name: docker-compose config validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate a throwaway .env for validation
+        run: cp .env.example .env
+      - name: Validate compose file
+        run: docker compose config -q

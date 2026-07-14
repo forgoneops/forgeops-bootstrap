@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+*.env.local
+
+# Runtime state and logs
+logs/
+backups/
+!backups/.gitkeep
+!logs/.gitkeep
+
+# Generated Caddy config (rendered by scripts/render_caddyfile.sh)
+docker/Caddyfile
+
+# Migration artifacts pulled from a source host for manual review
+docker-compose.yml.from-source
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.mypy_cache/

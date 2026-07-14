@@ -1,0 +1,130 @@
+networks:
+  edge:
+    name: forgeops_edge
+  internal:
+    name: forgeops_internal
+    internal: true   # no default route out to the host's public interface
+
+volumes:
+  caddy_data:
+    name: forgeops_caddy_data
+  caddy_config:
+    name: forgeops_caddy_config
+  portainer_data:
+    name: forgeops_portainer_data
+  postgres_data:
+    name: forgeops_postgres_data
+  redis_data:
+    name: forgeops_redis_data
+  uptime_kuma_data:
+    name: forgeops_uptime_kuma_data
+
+services:
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.8-alpine}
+    container_name: forgeops_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  portainer:
+    image: ${PORTAINER_IMAGE:-portainer/portainer-ce:2.21-alpine}
+    container_name: forgeops_portainer
+    restart: unless-stopped
+    command: -H unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9000/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.4-alpine}
+    container_name: forgeops_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    # Intentionally no `ports:` mapping — Postgres is never bound to the host.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4-alpine}
+    container_name: forgeops_redis
+    restart: unless-stopped
+    env_file: .env
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    # Intentionally no `ports:` mapping — Redis is never bound to the host.
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  uptime-kuma:
+    image: ${UPTIME_KUMA_IMAGE:-louislam/uptime-kuma:1.23.16}
+    container_name: forgeops_uptime_kuma
+    restart: unless-stopped
+    volumes:
+      - uptime_kuma_data:/app/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  watchtower:
+    image: ${WATCHTOWER_IMAGE:-containrrr/watchtower:1.7.1}
+    container_name: forgeops_watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal
+    # Watchtower only restarts containers to pick up images update.sh has
+    # already pulled at the pinned tags in configs/versions.env — it does not
+    # poll upstream registries for new tags itself (schedule: manual trigger
+    # via update.sh, not autonomous).
+    command: ["--cleanup", "--no-startup-message", "--run-once"]
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"

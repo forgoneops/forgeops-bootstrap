@@ -1,0 +1,7 @@
+{
+  // Allow long lines (tables and prose exceed 80 chars in several docs).
+  "MD013": false,
+  // Allow inline HTML is not used, but disable the "first line must be a
+  // top-level heading" rule for files that open with a badge or note.
+  "MD041": false
+}

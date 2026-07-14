@@ -1,0 +1,19 @@
+# Caddyfile.template
+#
+# Rendered into docker/Caddyfile by scripts/render_caddyfile.sh, driven by
+# .env (DOMAIN, EXPOSE_PORTAINER, EXPOSE_UPTIME_KUMA). Do not edit
+# docker/Caddyfile by hand — it is regenerated on every install.sh /
+# update.sh run and hand edits will be silently overwritten.
+
+{
+	# Global options
+	admin 0.0.0.0:2019
+	email admin@{{DOMAIN_OR_LOCALHOST}}
+}
+
+# Bare-IP / no-domain fallback: plain HTTP health endpoint only, until DOMAIN
+# is set in .env. Nothing else is reachable until a domain is configured.
+:80 {
+	respond /health "ok" 200
+	respond "ForgeOps Bootstrap: no DOMAIN configured in .env yet." 200
+}
