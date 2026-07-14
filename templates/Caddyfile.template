@@ -4,10 +4,13 @@
 # or update.sh run.
 
 {
-	# Bound to localhost, not 0.0.0.0 — this admin API can rewrite Caddy's
-	# whole config, no reason to expose it to the other containers on
-	# forgeops_internal.
-	admin localhost:2019
+	# Bound to the IPv4 loopback specifically, not 0.0.0.0 and not the
+	# hostname "localhost" — on Alpine, Go resolves "localhost" to the
+	# IPv6 loopback first, so Caddy ends up listening only on [::1] and
+	# the healthcheck's IPv4 wget gets a connection refused against a
+	# container that's actually fine. No reason to expose this past
+	# 127.0.0.1 anyway — it can rewrite Caddy's whole config.
+	admin 127.0.0.1:2019
 	email admin@{{DOMAIN_OR_LOCALHOST}}
 	log {
 		output file /var/log/caddy/access.log {
