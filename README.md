@@ -33,6 +33,8 @@ After install, check health any time:
 | `./verify.sh` | Validates every installed component, writes console/Markdown/JSON reports |
 | `sudo ./migrate.sh --host user@old-vps --sync` | Migrates an existing VPS into this environment (see [`MIGRATION.md`](MIGRATION.md)) |
 | `sudo ./uninstall.sh` | Removes installed components (add `--purge-data` to also delete stored data, with confirmation) |
+| `./scripts/backup.sh` | Takes a verified backup now (also runs automatically, daily, via `forgeops-backup.timer`) |
+| `./scripts/restore.sh --list` | Lists backups; omit `--list` to restore the most recent one (or `--from <timestamp>`) |
 
 ## Configuration
 

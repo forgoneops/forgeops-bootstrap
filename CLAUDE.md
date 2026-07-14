@@ -12,6 +12,7 @@ See `ARCHITECTURE.md` for the full picture. In short: a host layer configured by
 - `scripts/lib/common.sh` — shared logging, state tracking, and guard functions. Anything used by more than one entry point belongs here, not duplicated.
 - `scripts/lib/install_steps.sh`, `scripts/lib/verify_checks.sh` — one function per install step / verify check. Each function must be independently idempotent (safe to call again even if `install.sh`'s state file is deleted).
 - `scripts/render_caddyfile.sh` — the only thing that writes `docker/Caddyfile`. Never hand-edit that file; edit `templates/Caddyfile.template` instead.
+- `scripts/backup.sh` / `scripts/restore.sh` — daily-scheduled (via `forgeops-backup.timer`) backup/restore of PostgreSQL, Redis, and critical config. `backup.sh` always self-verifies before keeping an archive; `restore.sh` always verifies before touching anything, and requires a typed confirmation because it's destructive.
 - `configs/versions.env` — the only file `update.sh` reads for target versions. Bumping a version is a one-line edit here.
 - `docs/` — supplementary docs beyond the required top-level guides.
 

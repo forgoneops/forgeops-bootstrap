@@ -45,6 +45,19 @@ Docker Compose has no meaningful concept of installing one service independently
 
 `install.sh` tracks completed steps in `logs/.install-state` (one line per step, `<step>=done`). Each step function is itself written to be safe to re-invoke (apt installs are naturally idempotent; custom steps like SSH hardening or firewall rules explicitly check before mutating). This gives two independent layers of idempotency: the state file avoids redundant work on a normal re-run, and each step's own guard logic keeps the script safe even if the state file is deleted or edited by hand.
 
+## Backups
+
+`scripts/backup.sh` runs daily via the `forgeops-backup.timer` systemd unit (installed by `install.sh`'s `configure_backups` step, `RandomizedDelaySec=15m` so a fleet of hosts doesn't all back up at the exact same second). Each run:
+
+1. `pg_dump -Fc` the PostgreSQL database.
+2. `BGSAVE` Redis and wait for it to complete, then copy the resulting `dump.rdb`.
+3. Copy `.env`, `docker-compose.yml`, and `configs/versions.env` (mode 600 — this archive contains secrets).
+4. Write a SHA-256 checksum manifest, tar+gzip everything into `backups/forgeops-backup-<timestamp>.tar.gz`.
+5. **Verify the archive immediately**: re-extract it, confirm every checksum matches, and confirm the Postgres dump is structurally readable via `pg_restore --list`. A backup that fails verification is deleted on the spot rather than kept as a false sense of safety — a `backup.sh` run either produces a verified-good archive or fails loudly.
+6. Prune archives older than `BACKUP_RETENTION_DAYS` (from `.env`, default 14).
+
+`scripts/restore.sh` is the inverse: extracts and re-verifies checksums before touching anything, then stops the affected container, restores (drop/recreate + `pg_restore` for Postgres; RDB file swap for Redis), and starts it back up. It requires a typed `restore` confirmation (or `--yes` for scripted use) because it overwrites live data — there is no undo once `pg_restore`/the RDB swap runs, which is why verification happens *before* anything is touched rather than after.
+
 ## Extension points (see PROJECT_SPEC.md "Future Extensions")
 
 The Docker-first, named-network/volume, Caddy-edge, pinned-version architecture is deliberately generic: adding a new internal service later means adding one block to `docker-compose.yml`, attaching it to `forgeops_internal`, and — if it needs public exposure — adding an `EXPOSE_*` flag and a site block to the Caddyfile template. No component of the current architecture assumes there are exactly five services.

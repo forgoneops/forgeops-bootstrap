@@ -114,6 +114,38 @@ step_deploy_docker_stack() {
     docker compose up -d caddy portainer postgres redis uptime-kuma
 }
 
+step_configure_backups() {
+  chmod +x "${REPO_ROOT}/scripts/backup.sh" "${REPO_ROOT}/scripts/restore.sh"
+
+  cat >/etc/systemd/system/forgeops-backup.service <<EOF
+[Unit]
+Description=ForgeOps Bootstrap daily backup (PostgreSQL + Redis + config)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${REPO_ROOT}
+ExecStart=${REPO_ROOT}/scripts/backup.sh
+EOF
+
+  cat >/etc/systemd/system/forgeops-backup.timer <<'EOF'
+[Unit]
+Description=Run ForgeOps Bootstrap backup daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now forgeops-backup.timer
+}
+
 step_configure_automatic_security_updates() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges
   cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'

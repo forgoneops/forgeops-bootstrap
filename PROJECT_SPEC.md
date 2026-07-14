@@ -62,7 +62,7 @@ Every installed component has an explicit version policy — "always latest" is 
 
 Idempotent and resumable via a state file (`logs/.install-state`); re-running skips completed steps and resumes from any failure point. `install.sh --reset-state` forces a full re-run.
 
-Automatically: updates/upgrades Ubuntu, configures locale/timezone, installs Docker + Compose, Git, Python, uv, Node.js LTS, build-essential, curl, wget, jq, ripgrep, fzf, tmux, btop, htop, tree, ncdu, rsync, Fail2Ban, UFW, Caddy, Portainer, PostgreSQL, Redis, Uptime Kuma, Watchtower; creates project directories; configures automatic security updates, log rotation, SSH hardening (password auth only disabled once a key is verified present); detects KVM (informational only, logged — no KVM-dependent tooling installed in v1); generates a full installation report via `verify.sh`.
+Automatically: updates/upgrades Ubuntu, configures locale/timezone, installs Docker + Compose, Git, Python, uv, Node.js LTS, build-essential, curl, wget, jq, ripgrep, fzf, tmux, btop, htop, tree, ncdu, rsync, Fail2Ban, UFW, Caddy, Portainer, PostgreSQL, Redis, Uptime Kuma, Watchtower; creates project directories; installs the daily backup timer (see Backup, below); configures automatic security updates, log rotation, SSH hardening (password auth only disabled once a key is verified present); detects KVM (informational only, logged — no KVM-dependent tooling installed in v1); generates a full installation report via `verify.sh`.
 
 ## migrate.sh
 
@@ -96,7 +96,7 @@ SSH hardening (password auth disabled only after key-based login is confirmed po
 
 ## Backup
 
-Daily backups, configurable retention (`BACKUP_RETENTION_DAYS` in `.env`), restore scripts, backup verification. See `scripts/` and `docs/` for the backup/restore workflow.
+`scripts/backup.sh` runs daily via the `forgeops-backup.timer` systemd unit (installed by `install.sh`), dumping PostgreSQL (`pg_dump -Fc`) and Redis (RDB snapshot) plus critical config, archiving with a SHA-256 checksum manifest, and immediately verifying the archive — a backup that fails verification (bad checksum, unreadable Postgres dump) is deleted rather than kept. Retention is configurable via `BACKUP_RETENTION_DAYS` in `.env` (default 14 days). `scripts/restore.sh` re-verifies a chosen backup before touching anything, then requires a typed `restore` confirmation before overwriting live PostgreSQL/Redis data. See `ARCHITECTURE.md`'s Backups section for the full flow.
 
 ## Monitoring
 

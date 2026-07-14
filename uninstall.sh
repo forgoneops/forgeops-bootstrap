@@ -55,6 +55,7 @@ echo "  - Docker networks: forgeops_edge, forgeops_internal"
 echo "  - UFW rules added by install.sh (80/tcp, 443/tcp, 443/udp)"
 echo "  - Fail2Ban jail: /etc/fail2ban/jail.d/forgeops-sshd.local"
 echo "  - logrotate config: /etc/logrotate.d/forgeops"
+echo "  - systemd units: forgeops-backup.timer, forgeops-backup.service"
 echo ""
 
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
@@ -102,6 +103,11 @@ log_info "Removing Fail2Ban jail and logrotate config..."
 rm -f /etc/fail2ban/jail.d/forgeops-sshd.local
 systemctl restart fail2ban 2>/dev/null || true
 rm -f /etc/logrotate.d/forgeops
+
+log_info "Removing backup systemd units..."
+systemctl disable --now forgeops-backup.timer 2>/dev/null || true
+rm -f /etc/systemd/system/forgeops-backup.timer /etc/systemd/system/forgeops-backup.service
+systemctl daemon-reload 2>/dev/null || true
 
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
   log_warn "Purging user data as confirmed..."

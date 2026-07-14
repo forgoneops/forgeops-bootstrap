@@ -46,6 +46,7 @@ STEPS=(
   create_project_directories:step_create_project_directories
   ensure_env_file:ensure_env_file
   deploy_docker_stack:step_deploy_docker_stack
+  configure_backups:step_configure_backups
   configure_automatic_security_updates:step_configure_automatic_security_updates
   configure_log_rotation:step_configure_log_rotation
   configure_firewall:step_configure_firewall

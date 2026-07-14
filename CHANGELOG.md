@@ -14,3 +14,4 @@ All notable changes to this repository are documented here. Format loosely follo
 - State-file-backed resumable install (`logs/.install-state`).
 - Full documentation set: `README.md`, `PROJECT_SPEC.md`, `ARCHITECTURE.md`, `MIGRATION.md`, `SECURITY.md`, `TROUBLESHOOTING.md`, `CLAUDE.md`.
 - GitHub Actions CI: ShellCheck + Markdown lint on every PR.
+- `scripts/backup.sh` / `scripts/restore.sh`: daily-scheduled (systemd timer), self-verifying PostgreSQL + Redis + config backup and restore, closing the Backup section of `PROJECT_SPEC.md` that v1.0.0 had left unimplemented.
