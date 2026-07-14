@@ -111,10 +111,24 @@ if ! ( cd "${verify_dir}/${TIMESTAMP}" && sha256sum -c SHA256SUMS --quiet ); the
 fi
 
 if [[ -f "${verify_dir}/${TIMESTAMP}/postgres.dump" ]]; then
-  if ! docker run --rm -v "${verify_dir}/${TIMESTAMP}:/backup:ro" postgres:16-alpine \
-      pg_restore --list /backup/postgres.dump >/dev/null 2>&1; then
-    rm -f "${ARCHIVE}"
-    die "Backup verification FAILED: pg_restore could not read postgres.dump. Deleted the bad archive — re-run backup.sh."
+  # Verified via the already-running forgeops_postgres container itself
+  # rather than a separately hardcoded image tag — using a fixed
+  # postgres:16-alpine here would silently drift out of sync with whatever
+  # POSTGRES_IMAGE is actually pinned in configs/versions.env, the one
+  # place in the repo that wasn't reading from the single source of truth
+  # for versions (AUDIT.md round 2, SEC-1). This also avoids pulling a
+  # second image just to run --list.
+  if docker ps --filter "name=forgeops_postgres" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_postgres; then
+    docker cp "${verify_dir}/${TIMESTAMP}/postgres.dump" forgeops_postgres:/tmp/verify.dump
+    verify_ok=1
+    docker exec forgeops_postgres pg_restore --list /tmp/verify.dump >/dev/null 2>&1 || verify_ok=0
+    docker exec forgeops_postgres rm -f /tmp/verify.dump
+    if [[ "${verify_ok}" -eq 0 ]]; then
+      rm -f "${ARCHIVE}"
+      die "Backup verification FAILED: pg_restore could not read postgres.dump. Deleted the bad archive — re-run backup.sh."
+    fi
+  else
+    log_warn "forgeops_postgres is not running — skipped the pg_restore --list structural check (checksum verification above still passed)."
   fi
 fi
 

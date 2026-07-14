@@ -30,7 +30,15 @@
 
 # Bare-IP / no-domain fallback: plain HTTP health endpoint only, until DOMAIN
 # is set in .env. Nothing else is reachable until a domain is configured.
+# `log` (no args = the default logger defined in the global block above) is
+# included here too, not just on the DOMAIN-gated blocks in
+# render_caddyfile.sh — otherwise logs/caddy/access.log is never created on
+# a bare-IP install, and the forgeops-caddy-auth Fail2Ban jail (whose
+# logpath points at that file) would have nothing to watch from day one
+# regardless of whether a domain is ever configured (AUDIT.md round 2,
+# DOCKER-1).
 :80 {
 	respond /health "ok" 200
 	respond "ForgeOps Bootstrap: no DOMAIN configured in .env yet." 200
+	log
 }

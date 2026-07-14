@@ -83,7 +83,10 @@ fi
 
 cd "${REPO_ROOT}"
 log_info "Stopping and removing containers/networks..."
-docker compose down --remove-orphans || log_warn "docker compose down reported an issue (continuing)."
+# --profile ondemand: without it, `down` isn't profile-aware and can miss a
+# leftover forgeops_watchtower container from an interrupted
+# `docker compose run` (AUDIT.md round 2, DOCKER-2).
+docker compose --profile ondemand down --remove-orphans || log_warn "docker compose down reported an issue (continuing)."
 
 log_info "Removing pinned images..."
 if [[ -r "${VERSIONS_FILE}" ]]; then

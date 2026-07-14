@@ -100,6 +100,19 @@ state_reset() {
 # full behavior depends on external state that may appear later (e.g. SSH
 # hardening waiting on an authorized_keys file). Any other non-zero exit is
 # a real failure and aborts the install.
+#
+# The step function is invoked via `set +e; ( set -e; "$@" ); rc=$?; set -e`
+# — NOT bare `"$@"`, and NOT `( set -e; "$@" ) || rc=$?` either (an earlier
+# version of this fix tried exactly that and was WRONG: bash's set -e
+# exemption for commands in a && / || list turns out to cascade into a
+# subshell placed on the left of `||` too, so the inner `set -e` was itself
+# silently ignored — verified empirically, not just by reading the manual).
+# Calling the subshell as a bare statement (not part of any && / || / if
+# test) is what makes its own `set -e` actually take effect; `set +e` around
+# it stops that subshell's eventual failure from also killing run_step's own
+# caller before rc can be inspected. Confirmed by reproduction: a step body
+# of `false; true` now correctly reports failure instead of being masked by
+# `true` running last (AUDIT.md round 2, ARCH-1).
 run_step() {
   local step="$1"; shift
   if state_is_done "${step}"; then
@@ -107,8 +120,10 @@ run_step() {
     return 0
   fi
   log_info "Running step: ${step}"
-  local rc=0
-  "$@" || rc=$?
+  set +e
+  ( set -e; "$@" )
+  local rc=$?
+  set -e
   if [[ "${rc}" -eq 0 ]]; then
     state_mark_done "${step}"
     log_ok "Completed step: ${step}"
@@ -123,11 +138,16 @@ run_step() {
 # are already cheaply idempotent on their own (e.g. `docker compose up -d`)
 # where caching would prevent picking up legitimate config changes (like a
 # new EXPOSE_* flag in .env) on a plain re-run of install.sh.
+#
+# Same set +e / subshell / set -e rationale as run_step — see the comment
+# above it.
 run_step_always() {
   local step="$1"; shift
   log_info "Running step: ${step} (always re-evaluated, not state-cached)"
-  local rc=0
-  "$@" || rc=$?
+  set +e
+  ( set -e; "$@" )
+  local rc=$?
+  set -e
   if [[ "${rc}" -eq 0 ]]; then
     log_ok "Completed step: ${step}"
   else

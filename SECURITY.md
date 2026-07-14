@@ -14,7 +14,7 @@ ForgeOps Bootstrap assumes an internet-facing Ubuntu VPS with root SSH access, r
 - **No public-by-default admin surfaces:** Portainer and Uptime Kuma require an explicit opt-in (`EXPOSE_PORTAINER=true` / `EXPOSE_UPTIME_KUMA=true` in `.env`) before Caddy gives them a public route.
 - **Caddy admin API:** bound to `localhost:2019` inside the Caddy container (not `0.0.0.0`) — reachable only from within that container, not from sibling containers on `forgeops_internal` or the network at large.
 - **Least-privilege container environments:** Postgres and Redis each receive only the specific environment variables they need (via scoped `environment:` blocks), not every secret in `.env` wholesale.
-- **Brute-force protection on exposed admin UIs:** when `EXPOSE_PORTAINER`/`EXPOSE_UPTIME_KUMA` is enabled, Caddy logs access (JSON, bind-mounted to `logs/caddy/access.log`) and a second Fail2Ban jail (`forgeops-caddy-auth`) bans IPs after repeated 401/403 responses — not just the SSH jail.
+- **Brute-force protection on exposed admin UIs:** Caddy logs access (JSON, bind-mounted to `logs/caddy/access.log`) from the very first `install.sh` run — including the bare-IP fallback block, so the log file (and the jail that watches it) exists regardless of whether `DOMAIN` is ever set. A second Fail2Ban jail (`forgeops-caddy-auth`) bans IPs after repeated 401/403 responses. It only has meaningful traffic to act on once `EXPOSE_PORTAINER`/`EXPOSE_UPTIME_KUMA` is enabled and something is actually publicly reachable — not just the SSH jail.
 - **Resource limits:** every container has a `mem_limit` and a capped `json-file` log driver (`max-size: 10m`, `max-file: 3`), so a runaway container can't OOM the host or fill the disk with unbounded logs.
 
 ## Secrets
