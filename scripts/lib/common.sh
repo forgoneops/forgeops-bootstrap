@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# common.sh - shared logging, state, and guard functions for all ForgeOps scripts.
-# Sourced by install.sh, verify.sh, update.sh, uninstall.sh, migrate.sh.
+# Shared logging, state tracking, and guard functions. Sourced by every
+# top-level script (install.sh, verify.sh, update.sh, uninstall.sh,
+# migrate.sh) and by scripts/backup.sh, scripts/restore.sh,
+# scripts/render_caddyfile.sh.
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Paths (relative to repo root; callers must set REPO_ROOT before sourcing)
-# ---------------------------------------------------------------------------
+# Caller must set REPO_ROOT before sourcing this.
 : "${REPO_ROOT:?REPO_ROOT must be set before sourcing common.sh}"
 LOG_DIR="${REPO_ROOT}/logs"
 STATE_FILE="${LOG_DIR}/.install-state"
@@ -17,9 +17,7 @@ ENV_EXAMPLE="${REPO_ROOT}/.env.example"
 mkdir -p "${LOG_DIR}"
 RUN_LOG="${LOG_DIR}/$(basename "${0:-forgeops}" .sh)-$(date -u +%Y%m%dT%H%M%SZ).log"
 
-# ---------------------------------------------------------------------------
-# Colors (disabled automatically when stdout is not a TTY)
-# ---------------------------------------------------------------------------
+# Colors off automatically when piped/redirected.
 if [[ -t 1 ]]; then
   C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
   C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_BOLD=$'\033[1m'
@@ -27,9 +25,7 @@ else
   C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_BOLD=""
 fi
 
-# ---------------------------------------------------------------------------
-# Logging: every line goes to console (colored) and to RUN_LOG (plain, timestamped)
-# ---------------------------------------------------------------------------
+# Every line goes to the console (colored) and to RUN_LOG (plain, timestamped).
 _log() {
   local level="$1" color="$2"; shift 2
   local ts msg
@@ -49,28 +45,23 @@ die() {
   exit 1
 }
 
-# ---------------------------------------------------------------------------
-# Root / platform guards
-# ---------------------------------------------------------------------------
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    die "This script must be run as root (use sudo)."
+    die "run this as root (sudo)"
   fi
 }
 
 require_ubuntu_2404() {
-  [[ -r /etc/os-release ]] || die "Cannot detect OS: /etc/os-release not found."
+  [[ -r /etc/os-release ]] || die "can't read /etc/os-release, so can't confirm this is Ubuntu"
   # shellcheck disable=SC1091
   source /etc/os-release
   if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
-    die "ForgeOps Bootstrap targets Ubuntu 24.04 LTS. Detected: ${PRETTY_NAME:-unknown}."
+    die "this targets Ubuntu 24.04 — detected ${PRETTY_NAME:-something else}"
   fi
 }
 
-# ---------------------------------------------------------------------------
-# State tracking for install.sh resumability
-# Each completed step is recorded as its own line: "<step_name>=done"
-# ---------------------------------------------------------------------------
+# install.sh state tracking. Each finished step gets its own line:
+# "<step_name>=done" in logs/.install-state.
 state_init() {
   touch "${STATE_FILE}"
 }
@@ -87,101 +78,88 @@ state_mark_done() {
 
 state_reset() {
   : >"${STATE_FILE}"
-  log_warn "Install state cleared (${STATE_FILE}). Next run of install.sh will re-run every step."
+  log_warn "state cleared (${STATE_FILE}) — next install.sh run starts from scratch"
 }
 
-# Runs $2.. as a named, idempotent, resumable step. The step function itself
-# must be safe to call when already applied (e.g. `apt install -y` is already
-# idempotent; custom steps must self-check before mutating state).
+# Runs $2.. as a named, resumable step. Step functions need to be safe to
+# call again if already applied — `apt install -y` already is; anything
+# custom has to check for itself before mutating state.
 #
-# A step function may return exit code 75 (EX_TEMPFAIL) instead of 0 to mean
-# "succeeded, but in a deliberately deferred/incomplete state — do not cache
-# this as done, retry it on the next install.sh run." Used by steps whose
-# full behavior depends on external state that may appear later (e.g. SSH
-# hardening waiting on an authorized_keys file). Any other non-zero exit is
-# a real failure and aborts the install.
+# A step can return 75 instead of 0 to mean "done for now, but come back
+# and try again next run" (used by SSH hardening while it's waiting on an
+# authorized_keys file to show up). Anything else non-zero is a real
+# failure and stops the install.
 #
-# The step function is invoked via `set +e; ( set -e; "$@" ); rc=$?; set -e`
-# — NOT bare `"$@"`, and NOT `( set -e; "$@" ) || rc=$?` either (an earlier
-# version of this fix tried exactly that and was WRONG: bash's set -e
-# exemption for commands in a && / || list turns out to cascade into a
-# subshell placed on the left of `||` too, so the inner `set -e` was itself
-# silently ignored — verified empirically, not just by reading the manual).
-# Calling the subshell as a bare statement (not part of any && / || / if
-# test) is what makes its own `set -e` actually take effect; `set +e` around
-# it stops that subshell's eventual failure from also killing run_step's own
-# caller before rc can be inspected. Confirmed by reproduction: a step body
-# of `false; true` now correctly reports failure instead of being masked by
-# `true` running last (AUDIT.md round 2, ARCH-1).
+# The step runs as `set +e; ( set -e; "$@" ); rc=$?; set -e` rather than
+# the more obvious `"$@" || rc=$?`. Reason: bash disables errexit for the
+# whole body of a function called on the left side of `||`, so a step with
+# more than one command could have an early command fail and nobody notice
+# as long as the last command in the function still succeeded. Tried
+# wrapping just the function call in a subshell first (`( set -e; "$@" ) ||
+# rc=$?`) — same problem, the exemption follows the subshell across the
+# `||` too. This version actually catches it; confirmed with a step body
+# of `false; true`, which used to report success.
 run_step() {
   local step="$1"; shift
   if state_is_done "${step}"; then
-    log_info "Skipping '${step}' (already completed)."
+    log_info "skipping ${step}, already done"
     return 0
   fi
-  log_info "Running step: ${step}"
+  log_info "running: ${step}"
   set +e
   ( set -e; "$@" )
   local rc=$?
   set -e
   if [[ "${rc}" -eq 0 ]]; then
     state_mark_done "${step}"
-    log_ok "Completed step: ${step}"
+    log_ok "done: ${step}"
   elif [[ "${rc}" -eq 75 ]]; then
-    log_warn "Step '${step}' left in a deferred state — it will run again on the next install.sh invocation until fully satisfied."
+    log_warn "${step} is waiting on something — will retry next run"
   else
-    die "Step '${step}' failed (exit ${rc}). Fix the error above and re-run install.sh — completed steps will be skipped."
+    die "${step} failed (exit ${rc}) — fix it and re-run install.sh, finished steps get skipped"
   fi
 }
 
-# Runs $2.. every time, never gated by the state file. Use for steps that
-# are already cheaply idempotent on their own (e.g. `docker compose up -d`)
-# where caching would prevent picking up legitimate config changes (like a
-# new EXPOSE_* flag in .env) on a plain re-run of install.sh.
-#
-# Same set +e / subshell / set -e rationale as run_step — see the comment
-# above it.
+# Same as run_step but never cached — for steps that are already cheap to
+# re-run (docker compose up -d only touches containers whose config
+# actually changed) where caching would just mean an .env edit never takes
+# effect on the next plain install.sh run.
 run_step_always() {
   local step="$1"; shift
-  log_info "Running step: ${step} (always re-evaluated, not state-cached)"
+  log_info "running: ${step}"
   set +e
   ( set -e; "$@" )
   local rc=$?
   set -e
   if [[ "${rc}" -eq 0 ]]; then
-    log_ok "Completed step: ${step}"
+    log_ok "done: ${step}"
   else
-    die "Step '${step}' failed (exit ${rc}). Fix the error above and re-run install.sh."
+    die "${step} failed (exit ${rc}) — fix it and re-run install.sh"
   fi
 }
 
-# ---------------------------------------------------------------------------
-# versions.env / .env helpers
-# ---------------------------------------------------------------------------
 load_versions() {
-  [[ -r "${VERSIONS_FILE}" ]] || die "Missing ${VERSIONS_FILE}."
+  [[ -r "${VERSIONS_FILE}" ]] || die "missing ${VERSIONS_FILE}"
   # shellcheck disable=SC1090
   source "${VERSIONS_FILE}"
 }
 
 ensure_env_file() {
   if [[ -f "${ENV_FILE}" ]]; then
-    log_info ".env already exists — leaving it untouched."
+    log_info ".env already exists, leaving it alone"
     return 0
   fi
-  [[ -r "${ENV_EXAMPLE}" ]] || die "Missing ${ENV_EXAMPLE}; cannot generate .env."
-  log_info "Generating .env from .env.example with fresh random secrets..."
+  [[ -r "${ENV_EXAMPLE}" ]] || die "missing ${ENV_EXAMPLE}, can't generate .env"
+  log_info "generating .env with fresh secrets..."
   cp "${ENV_EXAMPLE}" "${ENV_FILE}"
-  # Replace every CHANGEME_* placeholder with a random 32-byte hex secret.
   local placeholder
   while IFS= read -r placeholder; do
     local secret
     secret="$(openssl rand -hex 32)"
-    # Use a delimiter unlikely to appear in a hex string or key name.
     sed -i "s|${placeholder}|${secret}|" "${ENV_FILE}"
   done < <(grep -oE '=CHANGEME_[A-Za-z0-9_]*' "${ENV_FILE}" | sed 's/^=//' | sort -u)
   chmod 600 "${ENV_FILE}"
-  log_ok ".env generated with random secrets (mode 600)."
+  log_ok ".env ready (mode 600)"
 }
 
 command_exists() {

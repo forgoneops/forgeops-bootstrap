@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# verify.sh - validates every installed ForgeOps Bootstrap component and
-# generates a health report in three formats: console, Markdown, JSON.
+# Checks every installed component and writes a health report as console
+# output, Markdown, and JSON.
 #
 # Usage:
-#   ./verify.sh                # full console report, exit 1 if any FAIL
-#   ./verify.sh --report-only  # write reports, suppress non-zero exit (used by install.sh)
-#   ./verify.sh --json         # print JSON report to stdout instead of console table
+#   ./verify.sh                # console report, exits 1 if anything FAILed
+#   ./verify.sh --report-only  # write the reports but always exit 0 (install.sh uses this)
+#   ./verify.sh --json         # JSON on stdout instead of the console table
 
 set -uo pipefail
 
@@ -24,7 +24,7 @@ for arg in "$@"; do
     --report-only) REPORT_ONLY=1 ;;
     --json) JSON_ONLY=1 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) die "Unknown argument: ${arg}" ;;
+    *) die "unknown argument: ${arg}" ;;
   esac
 done
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# verify_checks.sh - one check function per verify.sh row.
-# Each function prints exactly one line: "STATUS|detail"
-# STATUS is one of PASS, WARN, FAIL. Sourced by verify.sh.
+# One check per verify.sh row. Each function prints one line:
+# "STATUS|detail" where STATUS is PASS, WARN, or FAIL.
 
-set -uo pipefail   # deliberately no -e: a failing check must not kill verify.sh
+set -uo pipefail   # no -e on purpose: a failing check shouldn't kill the whole script
 
 check_operating_system() {
   if [[ -r /etc/os-release ]]; then
@@ -34,7 +33,7 @@ check_memory() {
   total_mb="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)"
   avail_mb="$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)"
   if (( total_mb < 1024 )); then
-    echo "WARN|${avail_mb}MB free / ${total_mb}MB total (< 1GB total is tight for this stack)"
+    echo "WARN|${avail_mb}MB free / ${total_mb}MB total (under 1GB is tight for this stack)"
   else
     echo "PASS|${avail_mb}MB free / ${total_mb}MB total"
   fi
@@ -45,9 +44,9 @@ check_disk() {
   line="$(df -h / | tail -1)"
   avail_pct="$(df / | tail -1 | awk '{gsub("%","",$5); print $5}')"
   if (( avail_pct >= 90 )); then
-    echo "FAIL|Root filesystem ${avail_pct}% full: ${line}"
+    echo "FAIL|root filesystem ${avail_pct}% full: ${line}"
   elif (( avail_pct >= 80 )); then
-    echo "WARN|Root filesystem ${avail_pct}% full: ${line}"
+    echo "WARN|root filesystem ${avail_pct}% full: ${line}"
   else
     echo "PASS|${line}"
   fi
@@ -55,9 +54,9 @@ check_disk() {
 
 check_networking() {
   if ip route get 1.1.1.1 >/dev/null 2>&1; then
-    echo "PASS|Default route present"
+    echo "PASS|default route present"
   else
-    echo "FAIL|No default route to the internet"
+    echo "FAIL|no default route to the internet"
   fi
 }
 
@@ -65,7 +64,7 @@ check_docker() {
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     echo "PASS|$(docker --version)"
   else
-    echo "FAIL|docker not installed or daemon not reachable"
+    echo "FAIL|docker not installed or daemon unreachable"
   fi
 }
 
@@ -97,39 +96,39 @@ check_claude_cli() {
   if command -v claude >/dev/null 2>&1; then
     echo "PASS|$(claude --version 2>/dev/null || echo present)"
   else
-    echo "WARN|claude CLI not found (optional — install separately if needed)"
+    echo "WARN|claude CLI not found (optional)"
   fi
 }
 
 check_caddy() {
   if docker ps --filter "name=forgeops_caddy" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_caddy; then
-    echo "PASS|forgeops_caddy container running"
+    echo "PASS|forgeops_caddy running"
   else
-    echo "FAIL|forgeops_caddy container not running"
+    echo "FAIL|forgeops_caddy not running"
   fi
 }
 
 check_portainer() {
   if docker ps --filter "name=forgeops_portainer" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_portainer; then
-    echo "PASS|forgeops_portainer container running"
+    echo "PASS|forgeops_portainer running"
   else
-    echo "FAIL|forgeops_portainer container not running"
+    echo "FAIL|forgeops_portainer not running"
   fi
 }
 
 check_redis() {
   if docker ps --filter "name=forgeops_redis" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_redis; then
-    echo "PASS|forgeops_redis container running"
+    echo "PASS|forgeops_redis running"
   else
-    echo "FAIL|forgeops_redis container not running"
+    echo "FAIL|forgeops_redis not running"
   fi
 }
 
 check_postgresql() {
   if docker ps --filter "name=forgeops_postgres" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_postgres; then
-    echo "PASS|forgeops_postgres container running"
+    echo "PASS|forgeops_postgres running"
   else
-    echo "FAIL|forgeops_postgres container not running"
+    echo "FAIL|forgeops_postgres not running"
   fi
 }
 
@@ -149,7 +148,7 @@ check_docker_networks() {
   local n
   n="$(docker network ls --filter "name=forgeops_" --format '{{.Name}}' | wc -l)"
   if (( n >= 2 )); then
-    echo "PASS|${n} forgeops_* networks present"
+    echo "PASS|${n} forgeops_* networks"
   else
     echo "FAIL|expected 2 forgeops_* networks (edge, internal), found ${n}"
   fi
@@ -159,7 +158,7 @@ check_docker_volumes() {
   local n
   n="$(docker volume ls --filter "name=forgeops_" --format '{{.Name}}' | wc -l)"
   if (( n >= 6 )); then
-    echo "PASS|${n} forgeops_* volumes present"
+    echo "PASS|${n} forgeops_* volumes"
   else
     echo "WARN|expected 6 forgeops_* volumes, found ${n}"
   fi
@@ -192,7 +191,7 @@ check_kvm_availability() {
   if [[ -f "${REPO_ROOT}/logs/.kvm-support" ]]; then
     echo "PASS|$(cat "${REPO_ROOT}/logs/.kvm-support")"
   else
-    echo "WARN|KVM detection has not run yet (run install.sh)"
+    echo "WARN|not checked yet — run install.sh"
   fi
 }
 
@@ -213,6 +212,6 @@ check_secrets_integrity() {
   if [[ -n "${empty_keys}" ]]; then
     echo "FAIL|empty required keys: ${empty_keys%,}"
   else
-    echo "PASS|.env present, mode 600, no empty required keys"
+    echo "PASS|.env present, mode 600, nothing empty"
   fi
 }

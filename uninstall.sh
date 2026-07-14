@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-# uninstall.sh - safely removes installed ForgeOps Bootstrap components.
+# Removes what install.sh set up.
 #
 # "Components" = packages, containers, images, systemd units, Caddy config,
-# UFW rules, installed binaries.
-# "User data"   = anything a component stored on the user's behalf: Postgres
-#                 and Redis named volumes, backups/, logs/, and the configured
-#                 PROJECTS_DIR.
+# UFW rules, installed binaries. "User data" = anything a component stored
+# for you: Postgres/Redis volumes, backups/, logs/, PROJECTS_DIR.
 #
-# Default behavior removes components ONLY. User data is never touched unless
-# --purge-data is passed, and even then each item is named and confirmed
-# individually (or all confirmed at once with --yes, still one prompt that
-# names everything about to be deleted).
+# Removes components only by default. User data needs --purge-data plus a
+# typed confirmation (or --yes for scripted teardown).
 #
 # Usage:
 #   sudo ./uninstall.sh                    # remove components, keep all data
@@ -35,7 +31,7 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     --yes) ASSUME_YES=1 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) die "Unknown argument: ${arg}" ;;
+    *) die "unknown argument: ${arg}" ;;
   esac
 done
 
@@ -72,23 +68,22 @@ else
 fi
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
-  log_info "Dry run — nothing was removed."
+  log_info "dry run — nothing removed"
   exit 0
 fi
 
 if [[ "${PURGE_DATA}" -eq 1 && "${ASSUME_YES}" -eq 0 ]]; then
   read -r -p "Type 'delete my data' to confirm permanent deletion of everything listed above: " confirm
-  [[ "${confirm}" == "delete my data" ]] || die "Confirmation text did not match — aborting. Nothing was deleted."
+  [[ "${confirm}" == "delete my data" ]] || die "confirmation text didn't match — nothing deleted"
 fi
 
 cd "${REPO_ROOT}"
-log_info "Stopping and removing containers/networks..."
-# --profile ondemand: without it, `down` isn't profile-aware and can miss a
-# leftover forgeops_watchtower container from an interrupted
-# `docker compose run` (AUDIT.md round 2, DOCKER-2).
-docker compose --profile ondemand down --remove-orphans || log_warn "docker compose down reported an issue (continuing)."
+log_info "stopping and removing containers/networks..."
+# --profile ondemand, otherwise `down` can miss a leftover watchtower
+# container from an interrupted `docker compose run`.
+docker compose --profile ondemand down --remove-orphans || log_warn "docker compose down complained, continuing anyway"
 
-log_info "Removing pinned images..."
+log_info "removing pinned images..."
 if [[ -r "${VERSIONS_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${VERSIONS_FILE}"
@@ -97,30 +92,30 @@ if [[ -r "${VERSIONS_FILE}" ]]; then
   done
 fi
 
-log_info "Removing UFW rules added by ForgeOps..."
+log_info "removing UFW rules..."
 ufw delete allow 80/tcp >/dev/null 2>&1 || true
 ufw delete allow 443/tcp >/dev/null 2>&1 || true
 ufw delete allow 443/udp >/dev/null 2>&1 || true
 
-log_info "Removing Fail2Ban jails and logrotate config..."
+log_info "removing fail2ban jails and logrotate config..."
 rm -f /etc/fail2ban/jail.d/forgeops-sshd.local /etc/fail2ban/jail.d/forgeops-caddy.local /etc/fail2ban/filter.d/forgeops-caddy-auth.conf
 systemctl restart fail2ban 2>/dev/null || true
 rm -f /etc/logrotate.d/forgeops
 
-log_info "Removing backup systemd units..."
+log_info "removing backup systemd units..."
 systemctl disable --now forgeops-backup.timer 2>/dev/null || true
 rm -f /etc/systemd/system/forgeops-backup.timer /etc/systemd/system/forgeops-backup.service
 systemctl daemon-reload 2>/dev/null || true
 
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
-  log_warn "Purging user data as confirmed..."
+  log_warn "purging user data as confirmed..."
   for v in "${DATA_VOLUMES[@]}"; do
-    docker volume rm "${v}" >/dev/null 2>&1 || log_warn "Could not remove volume ${v} (may not exist)."
+    docker volume rm "${v}" >/dev/null 2>&1 || log_warn "couldn't remove volume ${v} (may not exist)"
   done
   for d in "${DATA_DIRS[@]}"; do
     [[ -d "${d}" ]] && rm -rf "${d}"
   done
-  log_ok "User data purged."
+  log_ok "user data purged"
 fi
 
-log_ok "Uninstall complete. .env and the repository files themselves were left in place — delete the repo directory manually if you no longer need it."
+log_ok "uninstall complete — .env and the repo itself were left in place, delete the directory yourself if you're done with it"

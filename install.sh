@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# install.sh - provisions and configures the complete ForgeOps Bootstrap server.
+# Provisions and configures the ForgeOps Bootstrap server.
 #
-# Idempotent and resumable: each step below is tracked in logs/.install-state.
-# Re-running this script skips completed steps and resumes from any failure.
+# Idempotent and resumable — each step is tracked in logs/.install-state.
+# If it fails partway, fix the problem and run it again; finished steps
+# get skipped.
 #
 # Usage:
 #   sudo ./install.sh              # run/resume the full install
-#   sudo ./install.sh --reset-state    # forget progress, re-run every step
+#   sudo ./install.sh --reset-state    # forget progress, start over
 #   sudo ./install.sh --dry-run        # print the step order and exit
 
 set -euo pipefail
@@ -28,19 +29,15 @@ for arg in "$@"; do
       grep '^#' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) die "Unknown argument: ${arg} (see --help)" ;;
+    *) die "unknown argument: ${arg} (see --help)" ;;
   esac
 done
 
-# Each entry is name:function:mode. mode is "cached" (run once, skipped on
-# future install.sh invocations once marked done in logs/.install-state —
-# unless a step returns 75, see common.sh's run_step, used by
-# configure_ssh_security's deferred path — or --reset-state is used) or
-# "always" (re-evaluated on every install.sh invocation regardless of the
-# state file, for steps that are already cheaply idempotent on their own —
-# docker compose up -d only recreates containers if config actually
-# changed — where caching would silently no-op a legitimate re-run after
-# editing .env; see AUDIT.md IDEM-3).
+# name:function:mode. "cached" runs once and gets skipped on later runs
+# unless a step returns 75 (see common.sh's run_step) or --reset-state was
+# used. "always" runs every time regardless of the state file — for steps
+# that are already cheap to repeat (docker compose up -d) where caching
+# would mean an .env edit never actually takes effect.
 STEPS=(
   update_ubuntu:step_update_ubuntu:cached
   upgrade_packages:step_upgrade_packages:cached
@@ -66,7 +63,7 @@ STEPS=(
 )
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
-  log_info "Dry run — step order (nothing will be executed):"
+  log_info "step order (dry run, nothing executed):"
   for entry in "${STEPS[@]}"; do
     name="${entry%%:*}"
     mode="${entry##*:}"
@@ -80,7 +77,7 @@ require_ubuntu_2404
 state_init
 load_versions
 
-log_info "ForgeOps Bootstrap install starting. Log: ${RUN_LOG}"
+log_info "starting install. log: ${RUN_LOG}"
 
 for entry in "${STEPS[@]}"; do
   IFS=':' read -r name fn mode <<<"${entry}"
@@ -91,4 +88,4 @@ for entry in "${STEPS[@]}"; do
   fi
 done
 
-log_ok "Install complete. Run ./verify.sh for a full health report."
+log_ok "install complete — run ./verify.sh for a health report"

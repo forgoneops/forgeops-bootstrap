@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# install_steps.sh - one idempotent function per install.sh step.
-# Sourced by install.sh after common.sh. Every function here must be safe
-# to call even when the thing it installs/configures is already present.
+# One function per install.sh step. Sourced after common.sh. Each function
+# needs to be safe to call again if the thing it sets up already exists.
 
 set -euo pipefail
 
@@ -30,14 +29,12 @@ step_configure_timezone() {
 }
 
 step_install_base_packages() {
-  # Covers: Git, Python, build-essential, curl, wget, jq, ripgrep, fzf, tmux,
-  # btop, htop, tree, ncdu, rsync, Fail2Ban, UFW — all plain apt packages.
   DEBIAN_FRONTEND=noninteractive apt-get install -y "${APT_PACKAGES_BASIC[@]}"
 }
 
 step_install_uv() {
   if command_exists uv; then
-    log_info "uv already installed ($(uv --version))."
+    log_info "uv already installed ($(uv --version))"
     return 0
   fi
   curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin sh
@@ -45,7 +42,7 @@ step_install_uv() {
 
 step_install_nodejs() {
   if command_exists node && [[ "$(node -v)" == v"${NODE_MAJOR}".* ]]; then
-    log_info "Node.js ${NODE_MAJOR}.x already installed ($(node -v))."
+    log_info "Node.js ${NODE_MAJOR}.x already installed ($(node -v))"
     return 0
   fi
   curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
@@ -54,7 +51,7 @@ step_install_nodejs() {
 
 step_install_docker() {
   if command_exists docker; then
-    log_info "Docker already installed ($(docker --version))."
+    log_info "Docker already installed ($(docker --version))"
     return 0
   fi
   install -m 0755 -d /etc/apt/keyrings
@@ -72,19 +69,18 @@ step_install_docker() {
 }
 
 step_verify_docker_compose() {
-  command_exists docker || die "Docker must be installed before verifying Compose."
-  docker compose version >/dev/null 2>&1 || die "docker compose plugin not available."
+  command_exists docker || die "Docker needs to be installed before this check makes sense"
+  docker compose version >/dev/null 2>&1 || die "docker compose plugin isn't available"
   log_ok "docker compose: $(docker compose version --short)"
 }
 
 step_install_caddy() {
   if command_exists caddy; then
-    log_info "System 'caddy' binary detected — ForgeOps runs Caddy via Docker instead; nothing to do."
+    log_info "system caddy binary found — we run Caddy via Docker instead, nothing to do"
     return 0
   fi
-  # Caddy itself runs as a container (see docker-compose.yml); this step just
-  # pre-pulls the pinned image so `docker compose up` on first boot is fast
-  # and so verify.sh can confirm the image is present offline.
+  # Caddy itself runs as a container. This just pre-pulls the image so the
+  # first `docker compose up` isn't waiting on a slow pull.
   docker pull "${CADDY_IMAGE}"
 }
 
@@ -95,12 +91,9 @@ step_create_project_directories() {
 }
 
 step_deploy_docker_stack() {
-  # Covers: Install Portainer, Install PostgreSQL, Install Redis,
-  # Install Uptime Kuma — all delivered as pinned-image containers defined
-  # in docker-compose.yml. Docker Compose has no meaningful notion of
-  # "installing" one service independently of rendering the stack, so these
-  # four spec items are implemented as one idempotent `docker compose up -d`
-  # covering all of them (documented in ARCHITECTURE.md).
+  # "Install Portainer/Postgres/Redis/Uptime Kuma" all happen here as one
+  # docker compose up — there's no real way to install one service from a
+  # compose file independent of the others.
   cd "${REPO_ROOT}"
   bash "${REPO_ROOT}/scripts/render_caddyfile.sh"
   docker pull "${PORTAINER_IMAGE}"
@@ -171,30 +164,26 @@ EOF
 
 step_configure_ssh_security() {
   local sshd_config="/etc/ssh/sshd_config.d/60-forgeops-hardening.conf"
-  # Only disable password auth once we've confirmed at least one key-based
-  # login is possible (an authorized_keys file exists for root or the sudo
-  # user) — never lock out the operator.
+  # Only turn off password auth once we know a key actually works — don't
+  # want to lock anyone out.
   local key_present=0
   for home in /root /home/*; do
     [[ -s "${home}/.ssh/authorized_keys" ]] && key_present=1
   done
   if [[ "${key_present}" -eq 0 ]]; then
-    log_warn "No authorized_keys found for any user — leaving password auth ENABLED so you don't get locked out. Add an SSH key, then re-run install.sh to harden SSH."
+    log_warn "no authorized_keys found anywhere — leaving password auth on so you don't get locked out. Add a key, then re-run install.sh."
     cat >"${sshd_config}" <<'EOF'
-# ForgeOps: password auth left enabled — no SSH key detected yet.
+# password auth left on — no SSH key detected yet
 PermitRootLogin prohibit-password
 EOF
-    sshd -t || die "Generated sshd config is invalid — aborting before reload."
+    sshd -t || die "generated sshd config is invalid, not reloading"
     systemctl reload ssh
-    # Exit 75 (not 0): tells run_step this succeeded but is deliberately
-    # deferred — do not cache as done, so the next plain `install.sh` run
-    # re-checks for a key instead of silently no-op'ing (see AUDIT.md IDEM-1).
+    # 75 = "come back and check again next run" rather than "done for good"
     return 75
   fi
 
   cat >"${sshd_config}" <<'EOF'
-# ForgeOps SSH hardening — applied because at least one authorized_keys file
-# was verified present at install time.
+# hardened — an authorized_keys file was present at install time
 PasswordAuthentication no
 PermitRootLogin prohibit-password
 X11Forwarding no
@@ -202,17 +191,14 @@ MaxAuthTries 4
 ClientAliveInterval 300
 ClientAliveCountMax 2
 EOF
-  sshd -t || die "Generated sshd config is invalid — aborting before reload."
+  sshd -t || die "generated sshd config is invalid, not reloading"
   systemctl reload ssh
 }
 
 step_configure_firewall() {
-  # Deliberately no `ufw --force reset` here: a blanket reset would wipe any
-  # rule the operator added by hand for an unrelated purpose every time this
-  # step is forced to re-run (see AUDIT.md IDEM-2). `ufw default` and
-  # `ufw allow` are each independently idempotent — setting a default policy
-  # or adding a rule that already exists is a no-op, so this step only ever
-  # adds what ForgeOps needs without touching anything else.
+  # No `ufw --force reset` here — that would nuke any rule someone added
+  # by hand every time this step gets forced to re-run. `ufw default` and
+  # `ufw allow` are already no-ops if the rule's already there.
   ufw default deny incoming
   ufw default allow outgoing
   ufw allow OpenSSH
@@ -232,13 +218,9 @@ bantime = 1h
 findtime = 10m
 EOF
 
-  # Protects exposed admin UIs (Portainer/Uptime Kuma, via EXPOSE_*) once
-  # Caddy is logging to a file — see AUDIT.md SEC-4. Harmless/no-op if
-  # nothing is ever exposed: the jail just never matches anything in an
-  # access log full of 200s.
+  # Second jail for the exposed admin UIs (Portainer/Uptime Kuma), once
+  # Caddy is logging to a file. Does nothing if nothing's ever exposed.
   cat >/etc/fail2ban/filter.d/forgeops-caddy-auth.conf <<'EOF'
-# Matches Caddy's JSON access log (format json) for repeated 401/403
-# responses, e.g. failed logins against an exposed Portainer/Uptime Kuma.
 [Definition]
 failregex = "remote_ip":"<HOST>".*"status":(401|403)
 ignoreregex =
@@ -265,10 +247,10 @@ step_detect_kvm_support() {
     kvm_ok="likely (kvm-ok not installed to confirm)"
   fi
   echo "${kvm_ok}" >"${REPO_ROOT}/logs/.kvm-support"
-  log_info "KVM support: ${kvm_ok} (informational only — no KVM-dependent components installed in v1)."
+  log_info "KVM support: ${kvm_ok}"
 }
 
 step_generate_installation_report() {
   bash "${REPO_ROOT}/verify.sh" --report-only || true
-  log_ok "Installation report written to logs/verify-report.md and logs/verify-report.json"
+  log_ok "report written to logs/verify-report.{md,json}"
 }

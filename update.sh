@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# update.sh - safely updates the complete ForgeOps Bootstrap infrastructure.
-#
-# Moves every component to exactly the version declared in
-# configs/versions.env — never to upstream "latest". Aborts on any critical
-# failure and leaves the previously-working versions running (no
-# partially-updated state is left active).
+# Updates everything to the versions pinned in configs/versions.env — never
+# to upstream "latest". Bails on any real failure and leaves whatever was
+# already running in place, instead of leaving things half-upgraded.
 #
 # Usage:
 #   sudo ./update.sh
 
-set -uo pipefail   # no -e: we need to control abort/rollback ourselves
+set -uo pipefail   # no -e: we handle failure/abort ourselves below
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPO_ROOT
@@ -17,7 +14,7 @@ export REPO_ROOT
 for arg in "$@"; do
   case "${arg}" in
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "Unknown argument: ${arg}" >&2; exit 1 ;;
+    *) echo "unknown argument: ${arg}" >&2; exit 1 ;;
   esac
 done
 
@@ -26,73 +23,70 @@ source "${REPO_ROOT}/scripts/lib/common.sh"
 
 require_root
 load_versions
-[[ -f "${ENV_FILE}" ]] || die "No .env found — run install.sh first."
+[[ -f "${ENV_FILE}" ]] || die "no .env found — run install.sh first"
 
-log_info "Starting update run. Log: ${RUN_LOG}"
+log_info "starting update. log: ${RUN_LOG}"
 
-# --- 1. Snapshot currently-running image digests, for rollback reference ----
+# 1. Snapshot what's currently running, in case we need to roll back by hand.
 PREV_IMAGES_SNAPSHOT="${LOG_DIR}/pre-update-images-$(date -u +%Y%m%dT%H%M%SZ).txt"
 docker compose -f "${REPO_ROOT}/docker-compose.yml" images >"${PREV_IMAGES_SNAPSHOT}" 2>/dev/null || true
-log_info "Pre-update image snapshot saved: ${PREV_IMAGES_SNAPSHOT}"
+log_info "pre-update image snapshot: ${PREV_IMAGES_SNAPSHOT}"
 
-# --- 2. Update Ubuntu packages (security patches only) ----------------------
+# 2. Ubuntu security patches.
 if ! apt-get update -y; then
-  die "apt-get update failed — aborting before touching running services."
+  die "apt-get update failed — stopping before touching anything running"
 fi
 if ! DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; then
-  die "apt-get upgrade failed — aborting before touching running services. Ubuntu packages are unchanged from before this run; Docker services were never touched."
+  die "apt-get upgrade failed — Ubuntu packages unchanged, Docker services untouched"
 fi
-log_ok "Ubuntu packages updated."
+log_ok "Ubuntu packages updated"
 
-# --- 3. Pull pinned images and re-render Caddyfile ---------------------------
+# 3. Pull pinned images, re-render the Caddyfile in case DOMAIN/EXPOSE_* changed.
 cd "${REPO_ROOT}"
 bash "${REPO_ROOT}/scripts/render_caddyfile.sh"
 
 PULL_OK=1
 for img in "${CADDY_IMAGE}" "${PORTAINER_IMAGE}" "${POSTGRES_IMAGE}" "${REDIS_IMAGE}" "${UPTIME_KUMA_IMAGE}" "${WATCHTOWER_IMAGE}"; do
   if ! docker pull "${img}"; then
-    log_error "Failed to pull ${img}"
+    log_error "failed to pull ${img}"
     PULL_OK=0
   fi
 done
 if [[ "${PULL_OK}" -eq 0 ]]; then
-  die "One or more pinned images failed to pull — aborting before restarting anything. Currently-running containers are untouched."
+  die "one or more images failed to pull — nothing running was touched"
 fi
-log_ok "All pinned images pulled successfully."
+log_ok "all pinned images pulled"
 
-# --- 4. Recreate containers at the pinned versions ---------------------------
+# 4. Recreate at the pinned versions.
 if ! CADDY_IMAGE="${CADDY_IMAGE}" PORTAINER_IMAGE="${PORTAINER_IMAGE}" \
     POSTGRES_IMAGE="${POSTGRES_IMAGE}" REDIS_IMAGE="${REDIS_IMAGE}" \
     UPTIME_KUMA_IMAGE="${UPTIME_KUMA_IMAGE}" WATCHTOWER_IMAGE="${WATCHTOWER_IMAGE}" \
     docker compose up -d --force-recreate caddy portainer postgres redis uptime-kuma; then
-  die "docker compose up failed during recreate. Check 'docker compose ps' and container logs; the pre-update image snapshot is at ${PREV_IMAGES_SNAPSHOT} for manual rollback (docker compose up -d with the prior tags)."
+  die "docker compose up failed during recreate — check 'docker compose ps' and container logs. Manual rollback: docker compose up -d with the tags in ${PREV_IMAGES_SNAPSHOT}"
 fi
-log_ok "Containers recreated at pinned versions."
+log_ok "containers recreated at pinned versions"
 
-# --- 5. Run watchtower once to clean up any dangling images from the recreate
-# --profile ondemand is required: watchtower is profile-gated in
-# docker-compose.yml specifically so a bare `up -d` never starts it (see
-# AUDIT.md DOCKER-2) — `docker compose run` also respects profile gating.
-# No extra args passed to `run`: they would override (not append to) the
-# service's declared `command:`, silently dropping --no-startup-message
-# (see AUDIT.md SC-1) — relying on the compose file's own command instead.
+# 5. Clean up dangling images from the recreate. Watchtower is profile-gated
+# (see docker-compose.yml) so `up -d` never starts it on its own — this is
+# the only place it actually runs. No extra args to `run`: they'd replace
+# the command declared in the compose file instead of adding to it.
 docker compose --profile ondemand run --rm watchtower >/dev/null 2>&1 || true
 
-# --- 6. Prune unused Docker resources ------------------------------------------
+# 6. Prune what's no longer needed.
 docker image prune -f >/dev/null
 docker container prune -f >/dev/null
-log_ok "Unused Docker resources removed."
+log_ok "unused Docker resources removed"
 
-# --- 7. Clean apt package cache -----------------------------------------------
+# 7. apt cache.
 apt-get clean
-log_ok "apt package cache cleaned."
+log_ok "apt cache cleaned"
 
-# --- 8. Rotate logs now (in addition to the scheduled weekly logrotate) -----
-logrotate -f /etc/logrotate.d/forgeops 2>/dev/null || log_warn "logrotate config not found — run install.sh to configure it."
+# 8. Rotate logs now too, not just on the weekly schedule.
+logrotate -f /etc/logrotate.d/forgeops 2>/dev/null || log_warn "logrotate config missing — run install.sh"
 
-# --- 9. Verify all services (final gate) --------------------------------------
+# 9. Final gate: confirm everything's actually healthy.
 if ! bash "${REPO_ROOT}/verify.sh"; then
-  die "Post-update verify.sh reported failures. Services are running at the new pinned versions but are NOT healthy — inspect logs/verify-report.md immediately. Manual rollback: docker compose up -d with the tags recorded in ${PREV_IMAGES_SNAPSHOT}."
+  die "post-update verify.sh found problems — services are on the new versions but not healthy, check logs/verify-report.md now. Manual rollback: docker compose up -d with the tags in ${PREV_IMAGES_SNAPSHOT}"
 fi
 
-log_ok "Update complete — all services verified healthy at the versions pinned in configs/versions.env."
+log_ok "update complete, everything healthy at the pinned versions"
