@@ -88,7 +88,9 @@ if [[ -r "${VERSIONS_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${VERSIONS_FILE}"
   for img in "${CADDY_IMAGE:-}" "${PORTAINER_IMAGE:-}" "${POSTGRES_IMAGE:-}" "${REDIS_IMAGE:-}" "${UPTIME_KUMA_IMAGE:-}" "${WATCHTOWER_IMAGE:-}"; do
-    [[ -n "${img}" ]] && docker image rm "${img}" >/dev/null 2>&1 || true
+    if [[ -n "${img}" ]]; then
+      docker image rm "${img}" >/dev/null 2>&1 || true
+    fi
   done
 fi
 

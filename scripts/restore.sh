@@ -37,7 +37,11 @@ done
 BACKUPS_DIR="${REPO_ROOT}/backups"
 
 list_backups() {
-  find "${BACKUPS_DIR}" -maxdepth 1 -name 'forgeops-backup-*.tar.gz' -printf '%f\n' 2>/dev/null | sort
+  # Guard on directory existence: common.sh forces `set -e`, and under
+  # pipefail a `find` on a not-yet-created BACKUPS_DIR (e.g. before the
+  # first ./scripts/backup.sh run) would otherwise abort this script.
+  [[ -d "${BACKUPS_DIR}" ]] || return 0
+  find "${BACKUPS_DIR}" -maxdepth 1 -name 'forgeops-backup-*.tar.gz' -printf '%f\n' | sort
 }
 
 if [[ "${DO_LIST}" -eq 1 ]]; then
@@ -47,7 +51,10 @@ if [[ "${DO_LIST}" -eq 1 ]]; then
 fi
 
 if [[ -z "${FROM}" ]]; then
-  ARCHIVE="$(find "${BACKUPS_DIR}" -maxdepth 1 -name 'forgeops-backup-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
+  ARCHIVE=""
+  if [[ -d "${BACKUPS_DIR}" ]]; then
+    ARCHIVE="$(find "${BACKUPS_DIR}" -maxdepth 1 -name 'forgeops-backup-*.tar.gz' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)"
+  fi
   [[ -n "${ARCHIVE}" ]] || die "no backups in ${BACKUPS_DIR} — run ./scripts/backup.sh first"
 else
   ARCHIVE="${BACKUPS_DIR}/forgeops-backup-${FROM}.tar.gz"

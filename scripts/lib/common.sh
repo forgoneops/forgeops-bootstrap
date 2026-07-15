@@ -22,7 +22,9 @@ if [[ -t 1 ]]; then
   C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
   C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_BOLD=$'\033[1m'
 else
-  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_BOLD=""
+  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""
+  # shellcheck disable=SC2034  # C_BOLD is used by scripts that source this file (e.g. verify.sh)
+  C_BOLD=""
 fi
 
 # Every line goes to the console (colored) and to RUN_LOG (plain, timestamped).
