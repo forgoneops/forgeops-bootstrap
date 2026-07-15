@@ -86,14 +86,23 @@ step_install_caddy() {
 
 step_create_project_directories() {
   local projects_dir="${PROJECTS_DIR:-/opt/forgeops/projects}"
-  mkdir -p "${projects_dir}" "${REPO_ROOT}/backups" "${REPO_ROOT}/logs" "${REPO_ROOT}/logs/caddy"
+  mkdir -p "${projects_dir}" "${REPO_ROOT}/backups" "${REPO_ROOT}/logs" "${REPO_ROOT}/logs/caddy" "${REPO_ROOT}/logs/mcp-gateway"
   chmod 750 "${projects_dir}"
 }
 
 step_deploy_docker_stack() {
   # "Install Portainer/Postgres/Redis/Uptime Kuma" all happen here as one
   # docker compose up — there's no real way to install one service from a
-  # compose file independent of the others.
+  # compose file independent of the others. The VPN-gated MCP engine
+  # services join this same reconciliation for the same reason — their
+  # one-time provisioning (secrets, DB roles) happens in the step_install_*
+  # functions below, which must run before this one.
+  #
+  # mem0/mem0-mcp are deliberately NOT in this service list yet — see
+  # step_install_mem0's die() message. Their compose service definitions
+  # exist (docker-compose.yml) and build from ./build/mem0-server and
+  # ./build/mem0-mcp, but nothing populates those directories until the
+  # source-pinning question below is resolved with the operator.
   cd "${REPO_ROOT}"
   bash "${REPO_ROOT}/scripts/render_caddyfile.sh"
   docker pull "${PORTAINER_IMAGE}"
@@ -101,10 +110,134 @@ step_deploy_docker_stack() {
   docker pull "${REDIS_IMAGE}"
   docker pull "${UPTIME_KUMA_IMAGE}"
   docker pull "${WATCHTOWER_IMAGE}"
+  docker pull "${WGEASY_IMAGE}"
+  docker pull "${CADVISOR_IMAGE}"
+  docker pull "${PROMETHEUS_IMAGE}"
+  docker pull "${GRAFANA_IMAGE}"
+  docker pull "${MCP_PROXY_IMAGE}"
+  docker pull "${POSTGRES_MCP_IMAGE}"
   CADDY_IMAGE="${CADDY_IMAGE}" PORTAINER_IMAGE="${PORTAINER_IMAGE}" \
     POSTGRES_IMAGE="${POSTGRES_IMAGE}" REDIS_IMAGE="${REDIS_IMAGE}" \
     UPTIME_KUMA_IMAGE="${UPTIME_KUMA_IMAGE}" WATCHTOWER_IMAGE="${WATCHTOWER_IMAGE}" \
-    docker compose up -d caddy portainer postgres redis uptime-kuma
+    WGEASY_IMAGE="${WGEASY_IMAGE}" CADVISOR_IMAGE="${CADVISOR_IMAGE}" \
+    PROMETHEUS_IMAGE="${PROMETHEUS_IMAGE}" GRAFANA_IMAGE="${GRAFANA_IMAGE}" \
+    MCP_PROXY_IMAGE="${MCP_PROXY_IMAGE}" POSTGRES_MCP_IMAGE="${POSTGRES_MCP_IMAGE}" \
+    docker compose up -d --build \
+      caddy portainer postgres redis uptime-kuma \
+      wireguard cadvisor prometheus grafana \
+      mcp-filesystem mcp-git mcp-postgres mcp-gateway
+}
+
+step_install_wireguard() {
+  if [[ -z "${WG_HOST:-}" || "${WG_HOST}" == "CHANGEME_WG_HOST" ]]; then
+    log_warn "WG_HOST not set in .env — set it to this VPS's public IP/hostname, then re-run install.sh. See docs/VPN_SETUP.md."
+    return 75
+  fi
+  # UFW allow is additive-only (see step_configure_firewall) — safe to call
+  # again, `ufw allow` is already a no-op if the rule exists.
+  ufw allow "${WG_PORT:-51820}/udp"
+
+  # Best-effort jail — wg-easy's log format/path wasn't independently
+  # confirmed this session, so this filter is a starting point, not a
+  # verified-working one. Left disabled until confirmed against real
+  # wg-easy log output; a jail that never matches is safer than one with a
+  # wrong filter that locks out legitimate peers.
+  cat >/etc/fail2ban/filter.d/forgeops-wg-abuse.conf <<'EOF'
+[Definition]
+failregex = Invalid handshake initiation from <HOST>
+ignoreregex =
+EOF
+  cat >/etc/fail2ban/jail.d/forgeops-wg-abuse.local <<EOF
+[forgeops-wg-abuse]
+enabled = false
+filter = forgeops-wg-abuse
+logpath = ${REPO_ROOT}/logs/wireguard/wireguard.log
+maxretry = 10
+bantime = 1h
+findtime = 10m
+EOF
+  log_warn "forgeops-wg-abuse jail installed but left disabled (enabled = false) — verify its logpath/filter against real wg-easy output, then flip to enabled = true in /etc/fail2ban/jail.d/forgeops-wg-abuse.local."
+  systemctl restart fail2ban
+}
+
+step_install_observability() {
+  # No secrets or DB state to provision — cadvisor/prometheus/grafana are
+  # entirely config-file-driven (configs/prometheus/prometheus.yml,
+  # configs/grafana/provisioning/), both already committed to this repo.
+  # This step's only job is pre-pulling so the first `docker compose up`
+  # in step_deploy_docker_stack isn't waiting on a slow pull, same pattern
+  # as step_install_caddy.
+  docker pull "${CADVISOR_IMAGE}"
+  docker pull "${PROMETHEUS_IMAGE}"
+  docker pull "${GRAFANA_IMAGE}"
+}
+
+step_install_mem0() {
+  # BLOCKED — see docs/MEMORY.md "Open decision: source pinning". Mem0's
+  # self-hosted server ships no maintained, versioned Docker image, and the
+  # MCP wrapper this plan named (coleam00/mcp-mem0) has had no commits in
+  # 14+ months. Building either from source means cloning and running
+  # code from a repo the operator hasn't explicitly named/audited — that
+  # needs an explicit go-ahead per repo, not an inherited approval of
+  # "build from source" as a general approach. Not implemented until that
+  # decision is made; deploy_docker_stack does not include mem0/mem0-mcp
+  # in its service list yet, so nothing here silently runs unvetted code.
+  #
+  # Returns 75 (not die()) deliberately: everything else in this install —
+  # WireGuard, observability, the filesystem/git/postgres MCP servers — is
+  # unaffected by this decision and shouldn't be blocked by it. This step
+  # just keeps coming back on every install.sh run until it's resolved.
+  log_warn "step_install_mem0 not implemented — source-pinning decision pending, see docs/MEMORY.md. Rest of install.sh proceeds; re-run later once resolved."
+  return 75
+}
+
+step_install_mcp_gateway() {
+  # Dedicated READ-ONLY Postgres role — no write grants at all, so this is
+  # a real control, not just postgres-mcp's own --access-mode=restricted
+  # flag (defense in depth, see SECURITY.md).
+  docker compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres_mcp_ro') THEN
+    CREATE ROLE postgres_mcp_ro LOGIN PASSWORD '${POSTGRES_MCP_RO_PASSWORD}';
+  ELSE
+    ALTER ROLE postgres_mcp_ro PASSWORD '${POSTGRES_MCP_RO_PASSWORD}';
+  END IF;
+END
+\$\$;
+GRANT CONNECT ON DATABASE ${POSTGRES_DB} TO postgres_mcp_ro;
+GRANT USAGE ON SCHEMA public TO postgres_mcp_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO postgres_mcp_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO postgres_mcp_ro;
+SQL
+
+  if [[ -z "${MCP_BEARER_TOKEN:-}" || "${MCP_BEARER_TOKEN}" == "CHANGEME_MCP_BEARER_TOKEN" ]]; then
+    die "MCP_BEARER_TOKEN not set in .env — ensure_env_file should have generated one; check .env manually"
+  fi
+
+  # forgeops-mcp-auth watches mcp-gateway's own JSON access log — same
+  # format/pattern as the existing forgeops-caddy-auth jail, so this one is
+  # a confirmed-working filter, not a best-effort guess like the WG one.
+  cat >/etc/fail2ban/filter.d/forgeops-mcp-auth.conf <<'EOF'
+[Definition]
+failregex = "remote_ip":"<HOST>".*"status":401
+ignoreregex =
+EOF
+  cat >/etc/fail2ban/jail.d/forgeops-mcp-auth.local <<EOF
+[forgeops-mcp-auth]
+enabled = true
+filter = forgeops-mcp-auth
+logpath = ${REPO_ROOT}/logs/mcp-gateway/access.log
+maxretry = 8
+bantime = 1h
+findtime = 10m
+EOF
+  systemctl restart fail2ban
+
+  # mcp-postgres was already started by step_deploy_docker_stack and has
+  # been crash-looping on a role that didn't exist yet — restart it now
+  # instead of waiting out its backoff.
+  ( cd "${REPO_ROOT}" && docker compose restart mcp-postgres ) || true
 }
 
 step_configure_backups() {

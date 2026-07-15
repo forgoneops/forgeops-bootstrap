@@ -28,6 +28,34 @@ ForgeOps Bootstrap assumes an internet-facing Ubuntu VPS with root SSH access, r
 - **Backups contain secrets, unencrypted:** `scripts/backup.sh` includes a copy of `.env` inside each archive (needed to restore a fully-working stack). The archive file itself is `chmod 600`, but its *contents* are not encrypted — anyone who obtains a backup archive gets every secret in plaintext. Treat `backups/*.tar.gz` with the same sensitivity as `.env` itself.
 - **Backups are local-only in v1:** `scripts/backup.sh` writes to `backups/` on the same disk as the live data. This is not an offsite/3-2-1 backup strategy — a lost or destroyed VPS takes its backups with it. Offsite replication (e.g. periodic sync to remote object storage) is a Future Extension, not yet implemented.
 
+## VPN-gated MCP engine
+
+A self-hosted AI-platform backend layer (observability, shared memory, and an MCP gateway — see `PROJECT_SPEC.md`'s Platform Vision and `docs/MCP_GATEWAY.md`) sits on top of the infrastructure above. Its entire threat model is: **nothing in this layer is reachable from the public internet.**
+
+### Access path
+
+```
+client device --WireGuard VPN--> forgeops_internal --> mcp-gateway --bearer token--> tools/memory
+```
+
+An internet port scan against this VPS sees exactly three things: SSH (key-only), 80/443 (Caddy's existing public sites), and the WireGuard UDP port. Nothing else — not Grafana, not the MCP gateway, not any individual MCP server — ever receives a `ports:` mapping. `verify.sh`'s `check_mcp_reachable_only_via_vpn` fails loudly if that's ever violated.
+
+### Layered controls
+
+1. **WireGuard (network layer).** The `wireguard` service (wg-easy) is the only new host-facing port. Everything downstream is reachable only because WireGuard routes VPN-subnet traffic into `forgeops_internal` — the same network Postgres/Redis already sit on with no public route.
+2. **Bearer token (application layer), even inside the VPN.** `mcp-gateway` (a dedicated internal-only Caddy instance, see `configs/mcp-gateway/Caddyfile`) rejects any request without a valid `Authorization: Bearer <MCP_BEARER_TOKEN>` header with a 401, logged to `logs/mcp-gateway/access.log`. This exists specifically so a compromised VPN peer alone isn't sufficient to reach the backend — defense in depth, not a redundant check. `mem0-mcp` also receives the token directly (see `docker-compose.yml`'s comment there) so a hypothetical direct container-to-container connection on `forgeops_internal` — bypassing the gateway entirely — isn't auth-free either; whether that backend actually enforces it wasn't independently confirmed and should be verified before relying on it as the sole control.
+3. **Fail2Ban.** `forgeops-mcp-auth` bans IPs after repeated 401s against the MCP gateway, using the exact same JSON-log filter pattern as the existing `forgeops-caddy-auth` jail. `forgeops-wg-abuse` is installed but **left disabled** — its filter/logpath weren't confirmed against real wg-easy output this session; verify and enable it before relying on it.
+4. **Container hardening.** Every new service: `no-new-privileges`, `cap_drop: [ALL]` (with only the specific capability added back where structurally required — `NET_ADMIN` on `wireguard`, `SYS_PTRACE`/`DAC_READ_SEARCH` on `cadvisor`), `mem_limit`, `read_only: true` where the image tolerates it, and no service runs as root by choice (`mcp-stdio-bridge`'s Dockerfile creates and switches to a dedicated non-root user).
+5. **`mcp-postgres` is READ-ONLY.** Two independent controls, not one: `--access-mode=restricted` on the postgres-mcp bridge itself, *and* a dedicated `postgres_mcp_ro` Postgres role with `GRANT SELECT` only — no write grants exist for that role at all, so a bug in the bridge's own restriction logic still can't produce a write.
+6. **Secrets.** `WG_PASSWORD`, `MCP_BEARER_TOKEN`, `MEM0_DB_PASSWORD`, `POSTGRES_MCP_RO_PASSWORD` all follow the existing `.env` generation path (`openssl rand -hex 32` via `ensure_env_file`, mode 600, never logged). Token rotation: edit `MCP_BEARER_TOKEN` in `.env`, then `docker compose up -d mcp-gateway mem0-mcp` to pick it up — no downtime for any other service, since Caddy's config reload doesn't require restarting anything else on `forgeops_internal`.
+
+### Known gaps (documented, not hidden)
+
+- **Mem0 is not deployed in this change.** Its self-hosted server ships no maintained, versioned Docker image; the MCP wrapper this plan initially named (`coleam00/mcp-mem0`) has had no commits in 14+ months. Building either from source means running code from a repository the operator hasn't explicitly named/audited, which needs its own explicit go-ahead rather than an inherited approval of "build from source" as a general approach. `step_install_mem0` returns a loud, repeating warning (exit 75) instead of silently skipping or blocking the rest of the install. See `docs/MEMORY.md`.
+- **`forgeops-wg-abuse`'s Fail2Ban filter is unverified** (see layer 3 above) and ships disabled.
+- **cAdvisor runs non-privileged** with a reduced capability set (`SYS_PTRACE`, `DAC_READ_SEARCH`) instead of the commonly-documented `privileged: true` — metric completeness under this configuration wasn't independently verified; if Grafana dashboards show gaps, this is the first thing to revisit.
+- **`mcp-stdio-bridge`'s exact `mcp-proxy` CLI invocation** (wrapping a stdio MCP server behind `--sse-path`) matches the general convention for this class of tool but wasn't re-confirmed against `mcp-proxy --help` in the pinned image this session — verify before first production deploy.
+
 ## Reporting a vulnerability
 
 Open a private security advisory on this repository (GitHub → Security → Advisories → "Report a vulnerability") rather than a public issue. Include the affected script/component, reproduction steps, and impact. Do not open a public issue or PR that discloses an unpatched vulnerability.

@@ -11,6 +11,11 @@ backups/
 # Generated Caddy config (rendered by scripts/render_caddyfile.sh)
 docker/Caddyfile
 
+# Mem0 source checkouts (step_install_mem0 clones these at install time,
+# pinned by MEM0_GIT_REF/MEM0_MCP_GIT_REF in configs/versions.env — not
+# vendored into this repo)
+build/
+
 # Migration artifacts pulled from a source host for manual review
 docker-compose.yml.from-source
 

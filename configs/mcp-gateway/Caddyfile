@@ -1,0 +1,42 @@
+# The ONE MCP endpoint (see PROJECT_SPEC.md / SECURITY.md "VPN-gated MCP
+# engine"). Reachable only via forgeops_internal — this container has no
+# `ports:` mapping, so it's reachable only from something already on that
+# network, which in practice means the wireguard container routing VPN
+# traffic in. Reuses the same Caddy image/binary the rest of this repo
+# already trusts, instead of introducing a new bespoke auth component.
+#
+# Every request needs Authorization: Bearer <MCP_BEARER_TOKEN> or gets a
+# 401 — logged here in the same JSON format the existing
+# forgeops-caddy-auth Fail2Ban jail already parses, so forgeops-mcp-auth
+# (see scripts/lib/install_steps.sh's step_install_mcp_gateway) can reuse
+# that exact filter pattern.
+
+{
+	admin off
+}
+
+:8443 {
+	@unauthorized not header Authorization "Bearer {$MCP_BEARER_TOKEN}"
+	respond @unauthorized "unauthorized" 401
+
+	log {
+		output file /var/log/mcp-gateway/access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+		format json
+	}
+
+	handle_path /mem0/* {
+		reverse_proxy mem0-mcp:8050
+	}
+	handle_path /filesystem/* {
+		reverse_proxy mcp-filesystem:8000
+	}
+	handle_path /git/* {
+		reverse_proxy mcp-git:8000
+	}
+	handle_path /postgres/* {
+		reverse_proxy mcp-postgres:8000
+	}
+}

@@ -1,0 +1,13 @@
+# Auto-provisions Prometheus as Grafana's default datasource on first boot
+# (Grafana's own provisioning convention — files here are read once at
+# startup, not on every request). Mounted read-only.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
