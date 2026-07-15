@@ -2,6 +2,12 @@
 
 All notable changes to this repository are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- `PROJECT_SPEC.md` "Platform Vision" section, `ARCHITECTURE.md` "Platform layers" diagram, `docs/OSS_EVALUATION.md`, and `docs/ROADMAP.md`: documents the direction beyond the (complete, frozen) infrastructure layer — an eight-layer self-hosted AI-platform backend (MCP gateway, context, memory, knowledge, projects, observability) that any MCP-compatible client can plug into. Docs only in this change; no new services or code. Next PR scopes Layer 6 (MCP gateway + first MCP servers).
+
 ## [1.0.0] - Unreleased
 
 ### Added

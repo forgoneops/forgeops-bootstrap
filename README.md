@@ -4,6 +4,8 @@ Scripts to provision, verify, update, migrate, and tear down an Ubuntu 24.04 VPS
 
 Full spec: [`PROJECT_SPEC.md`](PROJECT_SPEC.md). Contributor notes: [`CLAUDE.md`](CLAUDE.md).
 
+This infrastructure layer is complete and frozen. It's also the foundation for a broader self-hosted AI-platform backend (MCP gateway, context/memory/knowledge services) being built on top of it — see `PROJECT_SPEC.md`'s "Platform Vision" section, [`ARCHITECTURE.md`](ARCHITECTURE.md#platform-layers-vision--see-project_specmd-platform-vision) layer diagram, and [`docs/ROADMAP.md`](docs/ROADMAP.md) for what's next. Nothing in this section changes what's documented above.
+
 ## Quick start
 
 ```bash

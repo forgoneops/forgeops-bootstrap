@@ -65,3 +65,22 @@ Docker Compose has no meaningful concept of installing one service independently
 ## Extension points (see PROJECT_SPEC.md "Future Extensions")
 
 The Docker-first, named-network/volume, Caddy-edge, pinned-version architecture is deliberately generic: adding a new internal service later means adding one block to `docker-compose.yml`, attaching it to `forgeops_internal`, and — if it needs public exposure — adding an `EXPOSE_*` flag and a site block to the Caddyfile template. No component of the current architecture assumes there are exactly five services.
+
+## Platform layers (vision — see PROJECT_SPEC.md "Platform Vision")
+
+Everything above this section is Layer 1, complete and frozen. The platform being built on top of it is organized into eight layers; layers 2-8 are not implemented yet. This section exists so later PRs land in a known slot instead of each one re-deciding the shape of the whole system.
+
+```
+Layer 8  Clients         Claude Code · ChatGPT · Cursor · Continue · Cline · future MCP clients   (external — not built here)
+Layer 7  Observability   Logging · Metrics · Tracing                                              (candidate: Langfuse)
+Layer 6  Integrations    MCP Gateway · GitHub · Google Drive · Filesystem                          ← next real PR
+Layer 5  Memory          Long-term / semantic memory · Knowledge graph                             (candidates: Letta/Mem0/Cognee — pick one)
+Layer 4  Projects        Project manager · Tasks · Decisions · Archive
+Layer 3  Context         Context engine · Compression · Routing                                    (the layer this project grew out of)
+Layer 2  Knowledge       Git · Knowledge base · Documentation                                       (candidate: Graphiti)
+Layer 1  Infrastructure  Docker · Networking · Secrets · Storage                                    ✅ complete, frozen (see above)
+```
+
+Each layer talks to the one below it through a well-defined interface (HTTP/MCP), never by reaching into another layer's internals — this is what keeps "every service is replaceable" true in practice, not just in principle. A new layer's first PR follows the same discipline as everything above: attach its containers to `forgeops_internal`, pin its image version in `configs/versions.env`, and expose it publicly only through an explicit `EXPOSE_*` flag if it needs that at all.
+
+Full OSS candidate research (what was evaluated, why each verdict) lives in `docs/OSS_EVALUATION.md`.
