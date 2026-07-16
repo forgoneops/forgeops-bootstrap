@@ -10,34 +10,30 @@
 # forgeops-caddy-auth Fail2Ban jail already parses, so forgeops-mcp-auth
 # (see scripts/lib/install_steps.sh's step_install_mcp_gateway) can reuse
 # that exact filter pattern.
+#
+# Task 8 (CRITICAL FIX): everything that must run in the order written --
+# the healthz bypass, the @unauthorized gate, and the four handle_path
+# backends -- is wrapped in one `route { }` block. Without it, Caddy does
+# NOT execute Caddyfile directives in file order; it uses its own fixed
+# internal directive precedence, and in that precedence reverse_proxy (via
+# handle_path) runs *before* respond. That meant the 401 gate below was
+# dead code: confirmed live during Task 8's full-chain validation run —
+# a curl with zero Authorization header against /filesystem/sse (and
+# /git/sse, /postgres/sse) came back 200 with the real backend's SSE
+# response body, and the gateway's own JSON access log showed the request
+# had no Authorization header at all yet still got proxied and a 200.
+# route{} forces literal top-to-bottom sequential evaluation regardless of
+# directive type, which is the documented fix for exactly this class of
+# Caddyfile ordering footgun (respond/abort combined with reverse_proxy).
+# Re-verified after this fix: no-token and wrong-token requests to all
+# three live backends return 401, and only a correct bearer token gets
+# proxied through to the backend's real response.
 
 {
 	admin off
 }
 
 :8443 {
-	# Loopback-only health check for the Docker healthcheck (see
-	# docker-compose.yml's mcp-gateway healthcheck and docs/MCP_GATEWAY.md).
-	# Exempt from the bearer-token check below, but ONLY when the request's
-	# source IP is 127.0.0.1 -- i.e. only the healthcheck process running
-	# inside this same container. `respond` is terminal, so a matching
-	# request short-circuits here and never reaches @unauthorized.
-	#
-	# A request to /healthz from anywhere else (another container on
-	# forgeops_internal, a VPN peer, etc.) does NOT match @healthz_internal
-	# (remote_ip fails), so it falls through to the same @unauthorized check
-	# as every other path: 401 without a valid bearer token, or a 404 (no
-	# route registered for /healthz) with one. Either way it's never treated
-	# as an authenticated health-only bypass from outside the container.
-	@healthz_internal {
-		path /healthz
-		remote_ip 127.0.0.1
-	}
-	respond @healthz_internal "ok" 200
-
-	@unauthorized not header Authorization "Bearer {$MCP_BEARER_TOKEN}"
-	respond @unauthorized "unauthorized" 401
-
 	log {
 		output file /var/log/mcp-gateway/access.log {
 			roll_size 10mb
@@ -46,16 +42,42 @@
 		format json
 	}
 
-	handle_path /mem0/* {
-		reverse_proxy mem0-mcp:8050
-	}
-	handle_path /filesystem/* {
-		reverse_proxy mcp-filesystem:8000
-	}
-	handle_path /git/* {
-		reverse_proxy mcp-git:8000
-	}
-	handle_path /postgres/* {
-		reverse_proxy mcp-postgres:8000
+	route {
+		# Loopback-only health check for the Docker healthcheck (see
+		# docker-compose.yml's mcp-gateway healthcheck and
+		# docs/MCP_GATEWAY.md). Exempt from the bearer-token check below,
+		# but ONLY when the request's source IP is 127.0.0.1 -- i.e. only
+		# the healthcheck process running inside this same container.
+		# `respond` is terminal, so a matching request short-circuits here
+		# and never reaches @unauthorized.
+		#
+		# A request to /healthz from anywhere else (another container on
+		# forgeops_internal, a VPN peer, etc.) does NOT match
+		# @healthz_internal (remote_ip fails), so it falls through to the
+		# same @unauthorized check as every other path: 401 without a
+		# valid bearer token, or a 404 (no route registered for /healthz)
+		# with one. Either way it's never treated as an authenticated
+		# health-only bypass from outside the container.
+		@healthz_internal {
+			path /healthz
+			remote_ip 127.0.0.1
+		}
+		respond @healthz_internal "ok" 200
+
+		@unauthorized not header Authorization "Bearer {$MCP_BEARER_TOKEN}"
+		respond @unauthorized "unauthorized" 401
+
+		handle_path /mem0/* {
+			reverse_proxy mem0-mcp:8050
+		}
+		handle_path /filesystem/* {
+			reverse_proxy mcp-filesystem:8000
+		}
+		handle_path /git/* {
+			reverse_proxy mcp-git:8000
+		}
+		handle_path /postgres/* {
+			reverse_proxy mcp-postgres:8000
+		}
 	}
 }

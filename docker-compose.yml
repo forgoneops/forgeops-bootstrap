@@ -574,8 +574,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Task 8: crystaldba/postgres-mcp:0.3.0 ships no wget (and no curl) --
+    # confirmed via `docker exec ... which wget` (not found) during the
+    # full-chain validation run, which left this healthcheck permanently
+    # failing ("/bin/sh: 1: wget: not found") even once the server was up
+    # and serving. python3 (via the image's own /app/.venv) is present, so
+    # this uses the same urllib one-byte-read probe already used for
+    # mcp-filesystem/mcp-git's healthchecks above, for the same reason:
+    # opens the SSE stream, reads one byte to confirm mcp-postgres is
+    # actually accepting connections, then closes it without waiting for
+    # the stream to end.
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8000/sse || exit 1"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/sse', timeout=3); r.read(1); sys.exit(0)"]
       interval: 30s
       timeout: 5s
       retries: 3
