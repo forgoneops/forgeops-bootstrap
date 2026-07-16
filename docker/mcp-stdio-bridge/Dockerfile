@@ -14,11 +14,27 @@
 # declared or used here, so nothing was actually pinned despite the name;
 # that dead arg is gone, replaced by the three below.
 #
-# NEEDS VERIFICATION before first production deploy: the exact `mcp-proxy`
-# CLI invocation below (a trailing `-- <command>` after --port/--sse-path)
-# matches the general stdio-proxy convention used across this class of tool,
-# but wasn't re-confirmed against `mcp-proxy --help` this session — run that
-# once and adjust if the flags differ.
+# VERIFIED this session (Task 5) via `mcp-proxy --help` on the actual pinned
+# 0.12.0 release: there is no `--sse-path` flag at all (SSE server options
+# are just --port/--host/--stateless/--sse-port(deprecated)/--sse-host
+# (deprecated)/--allow-origin/--expose-header). mcp-proxy 0.12.0 always
+# serves SSE at /sse -- confirmed both by the absence of the flag and by
+# ../mcp-stdio-bridge-python/Dockerfile's own startup-log verification
+# ("Serving MCP Servers via SSE: http://127.0.0.1:8000/sse") from Task 4.
+# The `--sse-path /sse` this Dockerfile previously passed made mcp-proxy
+# exit on an argparse error before ever starting -- mcp-filesystem (the one
+# service using this file) was crash-looping in production because of it.
+# Fixed by dropping the flag; the default /sse path already matches what
+# docker-compose.yml's healthcheck and the mcp-gateway Caddyfile expect.
+#
+# Also added `--host 0.0.0.0`: mcp-proxy's default --host is 127.0.0.1,
+# which only accepts connections from inside this container's own network
+# namespace. configs/mcp-gateway/Caddyfile reverse-proxies to this service
+# by container DNS name (mcp-filesystem:8000) from the separate mcp-gateway
+# container -- loopback-only binding would make it unreachable there even
+# though this container's own healthcheck (which also hits 127.0.0.1) would
+# still report healthy. Both containers stay on forgeops_internal, which has
+# no route to the host's public interface, so this isn't a new exposure.
 
 ARG PYTHON_BASE_IMAGE=python:3.12-slim
 FROM ${PYTHON_BASE_IMAGE}
@@ -48,4 +64,4 @@ EXPOSE 8000
 # this pinning fix, not a new failure mode. (mcp-git no longer uses this
 # Dockerfile; see ../mcp-stdio-bridge-python/Dockerfile for its uvx-based
 # equivalent.)
-ENTRYPOINT ["sh", "-c", "pkg=\"$MCP_SERVER_PACKAGE\"; if [ -n \"$MCP_SERVER_VERSION\" ]; then pkg=\"$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION\"; fi; exec mcp-proxy --port 8000 --sse-path /sse -- npx -y \"$pkg\" \"$@\"", "--"]
+ENTRYPOINT ["sh", "-c", "pkg=\"$MCP_SERVER_PACKAGE\"; if [ -n \"$MCP_SERVER_VERSION\" ]; then pkg=\"$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION\"; fi; exec mcp-proxy --port 8000 --host 0.0.0.0 -- npx -y \"$pkg\" \"$@\"", "--"]

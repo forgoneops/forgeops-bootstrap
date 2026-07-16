@@ -23,9 +23,17 @@
 # /sse by default with no flag needed -- confirmed via its own startup log
 # ("Serving MCP Servers via SSE: http://127.0.0.1:8000/sse"). This
 # Dockerfile's ENTRYPOINT omits the flag accordingly. The sibling
-# ../mcp-stdio-bridge/Dockerfile still passes it (same likely-broken
-# argument, on the same mcp-proxy version) -- that's mcp-filesystem's file,
-# not touched by this fix; flagged for its own follow-up in SECURITY.md.
+# ../mcp-stdio-bridge/Dockerfile previously still passed it (same broken
+# argument, on the same mcp-proxy version) -- fixed in Task 5 to match this
+# file (see that Dockerfile's own comment block for the fix + verification).
+#
+# Task 5 also added `--host 0.0.0.0` here (mirroring the same fix applied to
+# ../mcp-stdio-bridge/Dockerfile): mcp-proxy's default --host is 127.0.0.1,
+# loopback-only inside this container's own network namespace, but
+# configs/mcp-gateway/Caddyfile reverse-proxies to this service by container
+# DNS name (mcp-git:8000) from the separate mcp-gateway container -- that
+# path needs a non-loopback bind. Both containers stay on forgeops_internal
+# (no route to the host's public interface), so this isn't a new exposure.
 
 ARG PYTHON_BASE_IMAGE=python:3.12-slim
 FROM ${PYTHON_BASE_IMAGE}
@@ -59,4 +67,4 @@ EXPOSE 8000
 # when set, uvx resolves the exact pinned release ("pkg@version"), via uv's
 # documented `command@<version>` pin syntax; when blank, uvx falls back to
 # its own latest-on-PyPI resolution.
-ENTRYPOINT ["sh", "-c", "pkg=\"$MCP_SERVER_PACKAGE\"; if [ -n \"$MCP_SERVER_VERSION\" ]; then pkg=\"$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION\"; fi; exec mcp-proxy --port 8000 -- uvx \"$pkg\" \"$@\"", "--"]
+ENTRYPOINT ["sh", "-c", "pkg=\"$MCP_SERVER_PACKAGE\"; if [ -n \"$MCP_SERVER_VERSION\" ]; then pkg=\"$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION\"; fi; exec mcp-proxy --port 8000 --host 0.0.0.0 -- uvx \"$pkg\" \"$@\"", "--"]

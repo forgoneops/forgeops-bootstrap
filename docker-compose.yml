@@ -406,8 +406,17 @@ services:
     read_only: true
     networks:
       - internal
+    # Neither bridge Dockerfile installs wget (only nodejs/npm resp.
+    # git/uv, per their own comment blocks) -- wget --spider here would
+    # fail with "exec: wget: not found" and mask any real health signal
+    # behind a false negative. python3 is already present because both
+    # images are FROM python:3.12-slim (mcp-proxy itself is a pip package),
+    # so this needs no new dependency. urllib opens the connection and
+    # reads one byte off the SSE stream to confirm mcp-proxy is actually
+    # accepting connections and serving on /sse, then closes it -- doesn't
+    # wait for the stream to end (it doesn't).
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8000/sse || exit 1"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/sse', timeout=3); r.read(1); sys.exit(0)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -434,10 +443,42 @@ services:
     security_opt:
       - no-new-privileges:true
     read_only: true
+    # Discovered via Task 5's real `docker compose up` cycle (not caught by
+    # Task 4's standalone `docker run`, which didn't hit this because it
+    # tested a single container in isolation and this failure only
+    # manifests once mcp-proxy actually tries to spawn its stdio child):
+    # `uvx` needs to write under the invoking user's home dir and
+    # crash-loops otherwise -- first hit was `.cache/uv` ("Read-only file
+    # system"), and after tmpfs-mounting just that path, uv's *next* write
+    # target surfaced: `.local/share/uv/tools` (where uvx installs the tool
+    # it runs). Rather than chase every subpath uv might touch across
+    # future uv versions, tmpfs the whole home dir once. mcp-filesystem's
+    # sibling uses npx instead of uvx and doesn't hit an equivalent
+    # failure, so only mcp-git needs this. tmpfs (ephemeral, in-memory)
+    # rather than a named volume or dropping read_only entirely -- mirrors
+    # the existing prometheus service ("tmpfs: - /tmp") -- keeps
+    # read_only: true and cap_drop: ALL intact; none of this needs to
+    # survive a restart (uvx re-fetches/reinstalls the tool each start
+    # regardless). Explicit mode via the fstab-style inline option: this
+    # container runs as non-root uid 10001 (mcpbridge, see the Dockerfile),
+    # and a bare tmpfs mount with no mode defaults to root-owned 0755 --
+    # confirmed the hard way (the plain "/home/mcpbridge" version of this
+    # mount produced "Permission denied" instead of the earlier "Read-only
+    # file system"). 1777 mirrors ordinary /tmp semantics: world-writable +
+    # sticky bit, so mcpbridge can create files under it same as any other
+    # non-root user writing to /tmp. (The mapping-style long syntax --
+    # `tmpfs: - target: ... / tmpfs: mode: ...` -- isn't accepted by the
+    # installed Compose v5.3.1: "unexpected type map[string]interface {}"
+    # -- so this uses the older colon-separated short form instead.)
+    tmpfs:
+      - /home/mcpbridge:mode=1777
     networks:
       - internal
+    # Same fix and rationale as mcp-filesystem's healthcheck above: neither
+    # bridge Dockerfile installs wget, python3 is already present (base
+    # image is python:3.12-slim), so this needs no new dependency.
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8000/sse || exit 1"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/sse', timeout=3); r.read(1); sys.exit(0)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -459,6 +500,21 @@ services:
       - ./logs/mcp-gateway:/var/log/mcp-gateway
     cap_drop:
       - ALL
+    # Discovered via Task 5's real `docker compose up` cycle: caddy:2.8-alpine's
+    # /usr/bin/caddy binary ships with a file capability baked in
+    # (`getcap` reports `cap_net_bind_service=ep`). Combined with cap_drop:
+    # ALL + no-new-privileges below, the kernel refused the container's
+    # entrypoint exec itself with "exec /usr/bin/caddy: operation not
+    # permitted" -- no-new-privileges blocks any execve() that would grant
+    # privileges from a file's capability set that aren't already in the
+    # process's permitted set, which cap_drop: ALL guaranteed would never be
+    # true. This crash-looped mcp-gateway (255) before it ever read the
+    # Caddyfile. Adding the one capability the binary's file-caps declare
+    # back via cap_add satisfies that check; caddy still only binds :8443
+    # (an unprivileged port ≥ 1024) so the capability is never actually
+    # exercised at runtime, this only unblocks the exec.
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     networks:
