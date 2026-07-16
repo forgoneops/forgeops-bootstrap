@@ -6,7 +6,7 @@ cAdvisor + Prometheus + Grafana, deployed by `step_install_observability` / `ste
 
 - **cAdvisor** (`gcr.io/cadvisor/cadvisor:v0.60.5`) — per-container CPU/memory/disk/network metrics, scraped by Prometheus. Runs non-privileged with a reduced capability set (`SYS_PTRACE`, `DAC_READ_SEARCH` instead of `privileged: true`) — see `SECURITY.md`'s "Known gaps" if a metric looks missing in Grafana.
 - **Prometheus** (`prom/prometheus:v3.13.1`) — scrapes cAdvisor per `configs/prometheus/prometheus.yml` (committed, not templated — Compose service-name DNS means no host/IP hardcoding is needed). Data persists in the `forgeops_prometheus_data` volume.
-- **Grafana** (`grafana/grafana:13.1.0`) — Prometheus is auto-provisioned as its default datasource via `configs/grafana/provisioning/datasources/prometheus.yml`. Admin password reuses `WG_PASSWORD` from `.env` (same trust boundary — both are reachable only through the same VPN).
+- **Grafana** (`grafana/grafana:13.1.0`) — Prometheus is auto-provisioned as its default datasource via `configs/grafana/provisioning/datasources/prometheus.yml`. Admin password reuses `WG_PASSWORD` from `.env`. **This reuse is only safe under the default `EXPOSE_GRAFANA=false`** (same trust boundary as the VPN — both are reachable only through the same tunnel). If you flip `EXPOSE_GRAFANA=true`, that equivalence breaks: Grafana becomes reachable from the public internet while wg-easy's own admin UI stays VPN-only, so a public Grafana login is now guessable/brute-forceable using the same password that unlocks WireGuard peer management. Set a dedicated `GF_SECURITY_ADMIN_PASSWORD` (not `WG_PASSWORD`) before or as part of enabling public exposure — do not reuse the VPN password once Grafana is public.
 
 ## Accessing Grafana
 
