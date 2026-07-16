@@ -415,14 +415,13 @@ services:
 
   mcp-git:
     build:
-      context: ./docker/mcp-stdio-bridge
+      context: ./docker/mcp-stdio-bridge-python
       args:
         PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
         MCP_PROXY_VERSION: ${MCP_PROXY_VERSION:-0.12.0}
-        MCP_SERVER_PACKAGE: "@modelcontextprotocol/server-git"
-        # UNPINNED — see configs/versions.env's MCP_GIT_SERVER_VERSION
-        # comment: the npm package this points at does not appear to exist.
-        MCP_SERVER_VERSION: ${MCP_GIT_SERVER_VERSION:-}
+        UV_VERSION: ${UV_VERSION:-0.4.29}
+        MCP_SERVER_PACKAGE: ${MCP_GIT_SERVER_PACKAGE:-mcp-server-git}
+        MCP_SERVER_VERSION: ${MCP_GIT_SERVER_VERSION:-2026.7.10}
     container_name: forgeops_mcp_git
     restart: unless-stopped
     mem_limit: 128m
