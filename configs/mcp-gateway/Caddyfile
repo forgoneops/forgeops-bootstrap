@@ -15,8 +15,10 @@
 # the healthz bypass, the @unauthorized gate, and the four handle_path
 # backends -- is wrapped in one `route { }` block. Without it, Caddy does
 # NOT execute Caddyfile directives in file order; it uses its own fixed
-# internal directive precedence, and in that precedence reverse_proxy (via
-# handle_path) runs *before* respond. That meant the 401 gate below was
+# internal directive precedence, and in that precedence handle_path (which
+# wraps our reverse_proxy blocks) runs *before* respond. A bare reverse_proxy
+# with a path matcher would not have this problem -- it's specifically
+# handle_path's precedence that outranks respond. That meant the 401 gate below was
 # dead code: confirmed live during Task 8's full-chain validation run —
 # a curl with zero Authorization header against /filesystem/sse (and
 # /git/sse, /postgres/sse) came back 200 with the real backend's SSE
