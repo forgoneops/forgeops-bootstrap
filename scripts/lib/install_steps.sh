@@ -114,14 +114,21 @@ step_deploy_docker_stack() {
   docker pull "${CADVISOR_IMAGE}"
   docker pull "${PROMETHEUS_IMAGE}"
   docker pull "${GRAFANA_IMAGE}"
-  docker pull "${MCP_PROXY_IMAGE}"
   docker pull "${POSTGRES_MCP_IMAGE}"
+  # mcp-proxy is no longer a `docker pull`-able registry image — it's a pip
+  # package installed inside mcp-filesystem/mcp-git's own build (see
+  # docker/mcp-stdio-bridge/Dockerfile + configs/versions.env's
+  # MCP_PROXY_VERSION); nothing to pre-pull for it, `docker compose up
+  # --build` below handles that build step directly.
   CADDY_IMAGE="${CADDY_IMAGE}" PORTAINER_IMAGE="${PORTAINER_IMAGE}" \
     POSTGRES_IMAGE="${POSTGRES_IMAGE}" REDIS_IMAGE="${REDIS_IMAGE}" \
     UPTIME_KUMA_IMAGE="${UPTIME_KUMA_IMAGE}" WATCHTOWER_IMAGE="${WATCHTOWER_IMAGE}" \
     WGEASY_IMAGE="${WGEASY_IMAGE}" CADVISOR_IMAGE="${CADVISOR_IMAGE}" \
     PROMETHEUS_IMAGE="${PROMETHEUS_IMAGE}" GRAFANA_IMAGE="${GRAFANA_IMAGE}" \
-    MCP_PROXY_IMAGE="${MCP_PROXY_IMAGE}" POSTGRES_MCP_IMAGE="${POSTGRES_MCP_IMAGE}" \
+    POSTGRES_MCP_IMAGE="${POSTGRES_MCP_IMAGE}" \
+    PYTHON_BASE_IMAGE="${PYTHON_BASE_IMAGE}" MCP_PROXY_VERSION="${MCP_PROXY_VERSION}" \
+    MCP_FILESYSTEM_SERVER_VERSION="${MCP_FILESYSTEM_SERVER_VERSION}" \
+    MCP_GIT_SERVER_VERSION="${MCP_GIT_SERVER_VERSION:-}" \
     docker compose up -d --build \
       caddy portainer postgres redis uptime-kuma \
       wireguard cadvisor prometheus grafana \

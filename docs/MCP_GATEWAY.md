@@ -17,7 +17,7 @@ The single, VPN-gated entrypoint every AI client (Claude Code, Cursor, ChatGPT, 
 
 ## Authentication
 
-Every request needs `Authorization: Bearer <MCP_BEARER_TOKEN>` or gets a 401 (see `SECURITY.md` layer 2). No path is exempt, including health checks from outside the gateway itself.
+Every request needs `Authorization: Bearer <MCP_BEARER_TOKEN>` or gets a 401 (see `SECURITY.md` layer 2). The one exception is `/healthz`, and only when the request's source IP is the gateway container's own loopback (`127.0.0.1`) -- that's what the Docker healthcheck itself uses (see `docker-compose.yml`'s `mcp-gateway` healthcheck and `configs/mcp-gateway/Caddyfile`'s `@healthz_internal` matcher). A request to `/healthz` from anywhere else -- another container on `forgeops_internal`, a VPN peer, outside -- is NOT exempt: it still 401s without a valid bearer token, and even with one it 404s (no route is registered for that path). No path is otherwise exempt.
 
 ## Connecting a client
 

@@ -16,6 +16,25 @@
 }
 
 :8443 {
+	# Loopback-only health check for the Docker healthcheck (see
+	# docker-compose.yml's mcp-gateway healthcheck and docs/MCP_GATEWAY.md).
+	# Exempt from the bearer-token check below, but ONLY when the request's
+	# source IP is 127.0.0.1 -- i.e. only the healthcheck process running
+	# inside this same container. `respond` is terminal, so a matching
+	# request short-circuits here and never reaches @unauthorized.
+	#
+	# A request to /healthz from anywhere else (another container on
+	# forgeops_internal, a VPN peer, etc.) does NOT match @healthz_internal
+	# (remote_ip fails), so it falls through to the same @unauthorized check
+	# as every other path: 401 without a valid bearer token, or a 404 (no
+	# route registered for /healthz) with one. Either way it's never treated
+	# as an authenticated health-only bypass from outside the container.
+	@healthz_internal {
+		path /healthz
+		remote_ip 127.0.0.1
+	}
+	respond @healthz_internal "ok" 200
+
 	@unauthorized not header Authorization "Bearer {$MCP_BEARER_TOKEN}"
 	respond @unauthorized "unauthorized" 401
 

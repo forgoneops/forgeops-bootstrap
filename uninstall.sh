@@ -40,16 +40,25 @@ done
 PROJECTS_DIR="/opt/forgeops/projects"
 [[ -f "${ENV_FILE}" ]] && PROJECTS_DIR="$(grep -E '^PROJECTS_DIR=' "${ENV_FILE}" | cut -d= -f2- || echo "${PROJECTS_DIR}")"
 
+# Same default as .env.example / step_install_wireguard's `ufw allow
+# "${WG_PORT:-51820}/udp"` — needed here so `ufw delete` targets the exact
+# rule that was actually added, even if WG_PORT was customized.
+WG_PORT="51820"
+[[ -f "${ENV_FILE}" ]] && WG_PORT="$(grep -E '^WG_PORT=' "${ENV_FILE}" | cut -d= -f2- || echo "${WG_PORT}")"
+
 DATA_VOLUMES=(forgeops_postgres_data forgeops_redis_data forgeops_portainer_data forgeops_uptime_kuma_data forgeops_caddy_data forgeops_caddy_config)
 DATA_DIRS=("${REPO_ROOT}/backups" "${REPO_ROOT}/logs" "${PROJECTS_DIR}")
 
 echo ""
 echo "The following COMPONENTS will be removed:"
-echo "  - docker compose stack (containers): caddy, portainer, postgres, redis, uptime-kuma, watchtower"
-echo "  - Docker images pinned in configs/versions.env"
+echo "  - docker compose stack (containers): caddy, portainer, postgres, redis, uptime-kuma, watchtower,"
+echo "    wireguard, cadvisor, prometheus, grafana, mcp-filesystem, mcp-git, mcp-gateway, mcp-postgres"
+echo "  - Docker images pinned in configs/versions.env (incl. WireGuard/wg-easy, cAdvisor, Prometheus,"
+echo "    Grafana, postgres-mcp) + the locally-built mcp-filesystem/mcp-git bridge images"
 echo "  - Docker networks: forgeops_edge, forgeops_internal"
-echo "  - UFW rules added by install.sh (80/tcp, 443/tcp, 443/udp)"
-echo "  - Fail2Ban jails: forgeops-sshd.local, forgeops-caddy.local (+ its filter)"
+echo "  - UFW rules added by install.sh (80/tcp, 443/tcp, 443/udp, ${WG_PORT}/udp for WireGuard)"
+echo "  - Fail2Ban jails: forgeops-sshd.local, forgeops-caddy.local (+ its filter),"
+echo "    forgeops-mcp-auth.local (+ its filter), forgeops-wg-abuse.local (+ its filter, ships disabled)"
 echo "  - logrotate config: /etc/logrotate.d/forgeops"
 echo "  - systemd units: forgeops-backup.timer, forgeops-backup.service"
 echo ""
@@ -87,20 +96,42 @@ log_info "removing pinned images..."
 if [[ -r "${VERSIONS_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${VERSIONS_FILE}"
-  for img in "${CADDY_IMAGE:-}" "${PORTAINER_IMAGE:-}" "${POSTGRES_IMAGE:-}" "${REDIS_IMAGE:-}" "${UPTIME_KUMA_IMAGE:-}" "${WATCHTOWER_IMAGE:-}"; do
+  for img in "${CADDY_IMAGE:-}" "${PORTAINER_IMAGE:-}" "${POSTGRES_IMAGE:-}" "${REDIS_IMAGE:-}" "${UPTIME_KUMA_IMAGE:-}" "${WATCHTOWER_IMAGE:-}" \
+             "${WGEASY_IMAGE:-}" "${CADVISOR_IMAGE:-}" "${PROMETHEUS_IMAGE:-}" "${GRAFANA_IMAGE:-}" "${POSTGRES_MCP_IMAGE:-}"; do
     if [[ -n "${img}" ]]; then
       docker image rm "${img}" >/dev/null 2>&1 || true
     fi
   done
 fi
 
+# mcp-filesystem/mcp-git have no `image:` in docker-compose.yml — they're
+# built locally from docker/mcp-stdio-bridge (see configs/versions.env's
+# PYTHON_BASE_IMAGE/MCP_PROXY_VERSION/MCP_*_SERVER_VERSION), so there's no
+# fixed image name/tag to look up here the way the pulled images above have.
+# Ask compose itself for whatever it tagged them as, instead of guessing the
+# `<project>-<service>` naming convention.
+log_info "removing locally-built MCP bridge images (mcp-filesystem, mcp-git)..."
+if command_exists docker && [[ -f "${REPO_ROOT}/docker-compose.yml" ]]; then
+  while IFS= read -r img_id; do
+    [[ -n "${img_id}" ]] && docker image rm "${img_id}" >/dev/null 2>&1 || true
+  done < <(cd "${REPO_ROOT}" && docker compose images -q mcp-filesystem mcp-git 2>/dev/null | sort -u)
+fi
+
 log_info "removing UFW rules..."
 ufw delete allow 80/tcp >/dev/null 2>&1 || true
 ufw delete allow 443/tcp >/dev/null 2>&1 || true
 ufw delete allow 443/udp >/dev/null 2>&1 || true
+# Mirrors step_install_wireguard's `ufw allow "${WG_PORT:-51820}/udp"`
+# (scripts/lib/install_steps.sh) — same rule, same port var, deleted here.
+ufw delete allow "${WG_PORT}/udp" >/dev/null 2>&1 || true
 
 log_info "removing fail2ban jails and logrotate config..."
 rm -f /etc/fail2ban/jail.d/forgeops-sshd.local /etc/fail2ban/jail.d/forgeops-caddy.local /etc/fail2ban/filter.d/forgeops-caddy-auth.conf
+# forgeops-mcp-auth + forgeops-wg-abuse: added by step_install_mcp_gateway
+# and step_install_wireguard respectively (scripts/lib/install_steps.sh) —
+# same jail.d/filter.d file pairing as the sshd/caddy jails just above.
+rm -f /etc/fail2ban/jail.d/forgeops-mcp-auth.local /etc/fail2ban/filter.d/forgeops-mcp-auth.conf
+rm -f /etc/fail2ban/jail.d/forgeops-wg-abuse.local /etc/fail2ban/filter.d/forgeops-wg-abuse.conf
 systemctl restart fail2ban 2>/dev/null || true
 rm -f /etc/logrotate.d/forgeops
 
