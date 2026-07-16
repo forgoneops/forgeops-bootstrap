@@ -392,6 +392,11 @@ services:
         MCP_PROXY_VERSION: ${MCP_PROXY_VERSION:-0.12.0}
         MCP_SERVER_PACKAGE: "@modelcontextprotocol/server-filesystem"
         MCP_SERVER_VERSION: ${MCP_FILESYSTEM_SERVER_VERSION:-2026.7.10}
+        # Task 7: the console bin this scoped npm package installs -- not
+        # the same string as MCP_SERVER_PACKAGE. Verified via `npm view
+        # @modelcontextprotocol/server-filesystem@2026.7.10 bin` this
+        # session: { "mcp-server-filesystem": "dist/index.js" }.
+        MCP_SERVER_BIN: "mcp-server-filesystem"
     container_name: forgeops_mcp_filesystem
     restart: unless-stopped
     mem_limit: 128m
@@ -431,6 +436,12 @@ services:
         UV_VERSION: ${UV_VERSION:-0.4.29}
         MCP_SERVER_PACKAGE: ${MCP_GIT_SERVER_PACKAGE:-mcp-server-git}
         MCP_SERVER_VERSION: ${MCP_GIT_SERVER_VERSION:-2026.7.10}
+        # Task 7: the console script this PyPI package installs. Matches
+        # the package name here (upstream pyproject.toml: `[project.scripts]
+        # mcp-server-git = "mcp_server_git:main"`), kept as its own arg
+        # rather than reused from MCP_SERVER_PACKAGE since that match isn't
+        # guaranteed for PyPI packages in general.
+        MCP_SERVER_BIN: "mcp-server-git"
     container_name: forgeops_mcp_git
     restart: unless-stopped
     mem_limit: 128m

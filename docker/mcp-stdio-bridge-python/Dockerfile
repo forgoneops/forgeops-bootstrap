@@ -34,6 +34,23 @@
 # DNS name (mcp-git:8000) from the separate mcp-gateway container -- that
 # path needs a non-loopback bind. Both containers stay on forgeops_internal
 # (no route to the host's public interface), so this isn't a new exposure.
+#
+# TASK 7: `uvx "$pkg"` at container start resolves/installs from PyPI on
+# every single start, pinned version or not -- and forgeops_internal is
+# `internal: true` (zero egress by design, shared with production
+# Postgres/Redis; relaxing that isolation is not on the table). This
+# service could therefore never reach a stable healthy state: Task 5's
+# fixes got it past its earlier crash points into a terminal
+# DNS-resolution failure at this exact uvx call, confirmed via a real
+# `docker compose up` cycle. Fixed by resolving and installing the pinned
+# package at `docker build` time (this stage runs on the host, which has
+# normal egress) via `uv tool install`, into a fixed system directory
+# (/opt/uv-tools) rather than $HOME -- deliberately outside the
+# tmpfs-mounted home directory below, so the build-time install survives
+# into the running container instead of being shadowed by an empty tmpfs
+# mount every start. The ENTRYPOINT then invokes the installed console
+# script directly: no uvx, no runtime PyPI resolution, no network access
+# needed from inside forgeops_internal ever again.
 
 ARG PYTHON_BASE_IMAGE=python:3.12-slim
 FROM ${PYTHON_BASE_IMAGE}
@@ -51,8 +68,30 @@ RUN apt-get update -y \
 
 ARG MCP_SERVER_PACKAGE
 ARG MCP_SERVER_VERSION
-ENV MCP_SERVER_PACKAGE=${MCP_SERVER_PACKAGE}
-ENV MCP_SERVER_VERSION=${MCP_SERVER_VERSION}
+ARG MCP_SERVER_BIN
+ENV MCP_SERVER_BIN=${MCP_SERVER_BIN}
+
+# Installs the pinned MCP server package at BUILD time, not container-start
+# time (see the TASK 7 note above). Runs as root (before USER mcpbridge
+# below), targeting a fixed, non-$HOME directory via UV_TOOL_DIR /
+# UV_TOOL_BIN_DIR: mcp-git's home dir is tmpfs-mounted fresh (empty) at
+# every container start (see this Dockerfile's docker-compose.yml service
+# block -- that tmpfs previously existed because uvx needed to write
+# .cache/uv and .local/share/uv/tools there on every start; now that the
+# tool is baked in at build time and invoked directly, uvx never runs at
+# runtime and that home-dir write no longer happens). Installing under
+# $HOME instead would put the freshly-built tool exactly where the
+# empty runtime tmpfs mount would immediately hide it again. chmod at the
+# end ensures the non-root mcpbridge user (USER below) can execute what
+# root just installed.
+ENV UV_TOOL_DIR=/opt/uv-tools
+ENV UV_TOOL_BIN_DIR=/opt/uv-tools/bin
+ENV PATH="/opt/uv-tools/bin:${PATH}"
+RUN set -e; \
+    pkg="$MCP_SERVER_PACKAGE"; \
+    if [ -n "$MCP_SERVER_VERSION" ]; then pkg="$MCP_SERVER_PACKAGE==$MCP_SERVER_VERSION"; fi; \
+    uv tool install "$pkg"; \
+    chmod -R a+rX /opt/uv-tools
 
 # Runs as a non-root user — same rationale as ../mcp-stdio-bridge/Dockerfile:
 # the stdio MCP server this wraps only ever needs read/write access to a
@@ -63,8 +102,12 @@ USER mcpbridge
 
 EXPOSE 8000
 
-# MCP_SERVER_VERSION is optional, mirroring ../mcp-stdio-bridge/Dockerfile:
-# when set, uvx resolves the exact pinned release ("pkg@version"), via uv's
-# documented `command@<version>` pin syntax; when blank, uvx falls back to
-# its own latest-on-PyPI resolution.
-ENTRYPOINT ["sh", "-c", "pkg=\"$MCP_SERVER_PACKAGE\"; if [ -n \"$MCP_SERVER_VERSION\" ]; then pkg=\"$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION\"; fi; exec mcp-proxy --port 8000 --host 0.0.0.0 -- uvx \"$pkg\" \"$@\"", "--"]
+# MCP_SERVER_BIN names the console script the installed PyPI package
+# exposes (mirrors ../mcp-stdio-bridge/Dockerfile's MCP_SERVER_BIN for npm
+# packages) -- for mcp-server-git this matches the package name exactly
+# (upstream pyproject.toml: `[project.scripts] mcp-server-git =
+# "mcp_server_git:main"`), but is kept as its own build arg rather than
+# reused from MCP_SERVER_PACKAGE since PyPI console-script names aren't
+# guaranteed to match the package name in general. Invoked directly via
+# PATH (UV_TOOL_BIN_DIR above): no uvx, no runtime PyPI resolution.
+ENTRYPOINT ["sh", "-c", "exec mcp-proxy --port 8000 --host 0.0.0.0 -- \"$MCP_SERVER_BIN\" \"$@\"", "--"]

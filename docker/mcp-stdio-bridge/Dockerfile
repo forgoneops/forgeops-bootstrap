@@ -35,6 +35,20 @@
 # though this container's own healthcheck (which also hits 127.0.0.1) would
 # still report healthy. Both containers stay on forgeops_internal, which has
 # no route to the host's public interface, so this isn't a new exposure.
+#
+# TASK 7: `npx -y "$pkg"` at container start always attempts a registry
+# resolution first -- even with a pinned "pkg@version" -- before it will run
+# anything, npx-cached or not. forgeops_internal is `internal: true` (zero
+# egress, by design -- shared with production Postgres/Redis; relaxing that
+# isolation is not on the table). So this service could never reach a
+# stable healthy state as previously built: Task 5's fixes got it past its
+# earlier crash points into a new, terminal DNS-resolution failure at this
+# exact npx call, confirmed via a real `docker compose up` cycle. Fixed by
+# moving the package fetch to `docker build` time (this stage runs on the
+# host, which has normal egress) via `npm install -g`, and changing the
+# ENTRYPOINT to invoke the already-installed bin directly -- no npx, no
+# runtime registry resolution, no network access needed from inside
+# forgeops_internal ever again.
 
 ARG PYTHON_BASE_IMAGE=python:3.12-slim
 FROM ${PYTHON_BASE_IMAGE}
@@ -47,8 +61,21 @@ RUN apt-get update -y \
 
 ARG MCP_SERVER_PACKAGE
 ARG MCP_SERVER_VERSION
-ENV MCP_SERVER_PACKAGE=${MCP_SERVER_PACKAGE}
-ENV MCP_SERVER_VERSION=${MCP_SERVER_VERSION}
+ARG MCP_SERVER_BIN
+ENV MCP_SERVER_BIN=${MCP_SERVER_BIN}
+
+# Installs the pinned MCP server package at BUILD time, not container-start
+# time (see the TASK 7 note above). Runs as root (before USER mcpbridge
+# below) so the package lands in npm's default global prefix for this
+# apt-installed nodejs/npm (/usr, on Debian) -- already on every user's
+# PATH, no extra ENV plumbing needed. MCP_SERVER_VERSION is still optional:
+# when set, npm resolves the exact pinned release ("pkg@version"); when
+# blank, npm resolves latest -- but either way that resolution now happens
+# once, at build time, on a host with egress, and is baked into the image.
+RUN set -e; \
+    pkg="$MCP_SERVER_PACKAGE"; \
+    if [ -n "$MCP_SERVER_VERSION" ]; then pkg="$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION"; fi; \
+    npm install -g "$pkg"
 
 # Runs as a non-root user — the stdio MCP server this wraps only ever needs
 # read/write access to a bind-mounted directory (see docker-compose.yml's
@@ -58,10 +85,12 @@ USER mcpbridge
 
 EXPOSE 8000
 
-# MCP_SERVER_VERSION is optional: when set, npx resolves the exact pinned
-# release ("pkg@version"); when blank, npx falls back to its own
-# floating-latest resolution -- the same behavior every service had before
-# this pinning fix, not a new failure mode. (mcp-git no longer uses this
-# Dockerfile; see ../mcp-stdio-bridge-python/Dockerfile for its uvx-based
+# MCP_SERVER_BIN names the console binary the installed npm package exposes
+# -- not always the same string as the package name (e.g. the scoped
+# package "@modelcontextprotocol/server-filesystem" installs the bin
+# "mcp-server-filesystem"). Set per-service via docker-compose.yml build
+# args. Invoked directly against the build-time-installed package: no npx,
+# no runtime registry resolution. (mcp-git no longer uses this Dockerfile;
+# see ../mcp-stdio-bridge-python/Dockerfile for its uv-tool-install-based
 # equivalent.)
-ENTRYPOINT ["sh", "-c", "pkg=\"$MCP_SERVER_PACKAGE\"; if [ -n \"$MCP_SERVER_VERSION\" ]; then pkg=\"$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION\"; fi; exec mcp-proxy --port 8000 --host 0.0.0.0 -- npx -y \"$pkg\" \"$@\"", "--"]
+ENTRYPOINT ["sh", "-c", "exec mcp-proxy --port 8000 --host 0.0.0.0 -- \"$MCP_SERVER_BIN\" \"$@\"", "--"]
