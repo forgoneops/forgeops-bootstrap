@@ -58,10 +58,10 @@ STEPS=(
   # psql` role-creation AFTER deploy_docker_stack on purpose — postgres has
   # to actually be running for `exec` to work. mcp-postgres itself is
   # already up by this point (started above) and will simply keep retrying
-  # via its restart policy until the role these steps create actually
-  # exists — a brief, self-recovering crash-loop rather than a hard
-  # ordering dependency, since Compose has no cross-container "wait for
-  # this SQL to run" primitive.
+  # via its restart policy until the postgres_mcp_ro role that
+  # step_install_mcp_gateway creates actually exists — a brief,
+  # self-recovering crash-loop rather than a hard ordering dependency, since
+  # Compose has no cross-container "wait for this SQL to run" primitive.
   install_mem0:step_install_mem0:cached
   install_mcp_gateway:step_install_mcp_gateway:cached
   configure_backups:step_configure_backups:cached

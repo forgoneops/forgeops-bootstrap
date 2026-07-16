@@ -46,7 +46,7 @@ PROJECTS_DIR="/opt/forgeops/projects"
 WG_PORT="51820"
 [[ -f "${ENV_FILE}" ]] && WG_PORT="$(grep -E '^WG_PORT=' "${ENV_FILE}" | cut -d= -f2- || echo "${WG_PORT}")"
 
-DATA_VOLUMES=(forgeops_postgres_data forgeops_redis_data forgeops_portainer_data forgeops_uptime_kuma_data forgeops_caddy_data forgeops_caddy_config)
+DATA_VOLUMES=(forgeops_postgres_data forgeops_redis_data forgeops_portainer_data forgeops_uptime_kuma_data forgeops_caddy_data forgeops_caddy_config forgeops_wireguard_config forgeops_prometheus_data forgeops_grafana_data)
 DATA_DIRS=("${REPO_ROOT}/backups" "${REPO_ROOT}/logs" "${PROJECTS_DIR}")
 
 echo ""
@@ -71,7 +71,7 @@ if [[ "${PURGE_DATA}" -eq 1 ]]; then
   for d in "${DATA_DIRS[@]}"; do echo "    - ${d}"; done
   echo ""
 else
-  echo "User data (Postgres/Redis/Portainer/Uptime Kuma volumes, backups/, logs/, ${PROJECTS_DIR}) will be LEFT UNTOUCHED."
+  echo "User data (Postgres/Redis/Portainer/Uptime Kuma/WireGuard/Prometheus/Grafana volumes, backups/, logs/, ${PROJECTS_DIR}) will be LEFT UNTOUCHED."
   echo "Pass --purge-data to also delete it."
   echo ""
 fi

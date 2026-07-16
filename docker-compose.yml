@@ -553,9 +553,9 @@ services:
       start_period: 10s
 
   # READ-ONLY by design (SECURITY.md non-negotiable) — the dedicated
-  # postgres_mcp_ro role created by step_install_mem0 has no write grants at
-  # all, so this is defense in depth on top of --access-mode=restricted, not
-  # the only thing preventing writes.
+  # postgres_mcp_ro role created by step_install_mcp_gateway has no write
+  # grants at all, so this is defense in depth on top of
+  # --access-mode=restricted, not the only thing preventing writes.
   mcp-postgres:
     image: ${POSTGRES_MCP_IMAGE:-crystaldba/postgres-mcp:0.3.0}
     container_name: forgeops_mcp_postgres
