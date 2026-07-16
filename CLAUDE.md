@@ -62,6 +62,55 @@ Version bumps go through `configs/versions.env`, then `sudo ./update.sh`. Never 
 
 See `SECURITY.md`. Non-negotiables for any change: no hardcoded credentials, no default passwords, secrets only via `.env`/`env_file`, no new public-by-default network exposure (any new service defaults to `forgeops_internal` with no `ports:` mapping unless it's meant to be the edge).
 
+## Isolated-project Compose testing (validation runs)
+
+`docker-compose.yml` pins every top-level `volumes:` entry to a **literal**
+`name:` (e.g. `postgres_data` → `forgeops_postgres_data`), matching the
+literal `container_name:` and network `name:` values production already
+depends on. This means Compose's project-name scoping (`-p <project>`)
+does **not** protect volumes the way it protects container/network names —
+Compose still parses and can act on *every* volume declared in the file,
+not just the ones used by whatever services you actually bring up under
+your isolated project name, because the names aren't derived from
+`${COMPOSE_PROJECT_NAME}` at all.
+
+Confirmed empirically (2026-07-16, dry-run `docker compose config` only,
+no volumes touched): stripping the literal `name:` overrides and letting
+Compose derive default names from the directory `docker-compose.yml`
+lives in produces `forgeops-bootstrap_postgres_data`,
+`forgeops-bootstrap_caddy_data`, etc. — **different names than production's
+existing volumes** (`forgeops_postgres_data`, `forgeops_caddy_data`, ...).
+Production's directory is literally `~/forgeops-bootstrap` on the VPS, so
+this isn't a hypothetical mismatch — dropping the `name:` overrides would
+make the next real `install.sh`/`update.sh` run create brand-new, empty
+volumes under the derived names instead of reattaching to production's
+existing data. **Do not remove the literal `name:` overrides from
+`docker-compose.yml`'s `volumes:` section for this reason.**
+
+The enforced rule instead, non-negotiable for any isolated-clone/
+isolated-project Compose testing (e.g. a `-p forgeops-validate` run
+against a VPS clone):
+
+- **Never pass `-v` / `--volumes` to `docker compose down` (or `docker
+  compose down` combined with a separate `docker volume rm`/`prune`)
+  against this `docker-compose.yml`, full stop** — not even from an
+  isolated project name, not even "just to clean up the test volume."
+  Because every volume in the file resolves to production's literal
+  names, `-v` risks removing production's real data volumes the moment
+  production's containers aren't holding them open (see
+  `.superpowers/sdd/task-8-report.md` Concern #1 for the near-miss that
+  surfaced this).
+- If a validation run needs a disposable Postgres/Redis volume, override
+  just that service's volume mount in an **untracked**
+  `docker-compose.override.*.yml` to point at a throwaway named volume
+  (e.g. `forgeops_validate_postgres_data`) instead of relying on `-v`
+  teardown, and delete that specific throwaway volume by its full
+  explicit name (`docker volume rm forgeops_validate_postgres_data`) —
+  never a bare `down -v` against the shared compose file.
+- Tear down isolated validation stacks with plain `docker compose -p
+  <project> down` (no `-v`), then remove only volumes you explicitly
+  named yourself, by their exact name.
+
 ## Working in this repo (for Claude specifically)
 
 - Treat `PROJECT_SPEC.md` as the source of truth for *what* the repository must do; treat this file as the source of truth for *how* to build it.
