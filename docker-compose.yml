@@ -190,14 +190,19 @@ services:
     mem_limit: 128m
     logging: *default-logging
     environment:
-      WG_HOST: ${WG_HOST}
-      # wg-easy v15's admin-password env var/hashing scheme was not
-      # independently re-verified against its current docs this session —
-      # confirm the exact variable name (PASSWORD vs PASSWORD_HASH, and
-      # whether it expects a raw value or a pre-hashed one) against
-      # https://github.com/wg-easy/wg-easy before first deploy. Tracked in
-      # docs/VPN_SETUP.md.
-      PASSWORD: ${WG_PASSWORD}
+      # wg-easy v15 dropped the v14-era WG_HOST / PASSWORD / PASSWORD_HASH
+      # env vars entirely -- confirmed against wg-easy's own v15 docs (see
+      # docs/VPN_SETUP.md for the exact URLs cited). v15's replacement is
+      # this one-shot "unattended setup" block: INIT_* vars are read only
+      # on the container's very first boot (no existing /etc/wireguard
+      # config), then ignored on every boot after that. To rotate
+      # WG_PASSWORD later, change it inside the admin UI itself -- editing
+      # this block and restarting the container does nothing post-bootstrap.
+      INIT_ENABLED: "true"
+      INIT_USERNAME: "admin"
+      INIT_PASSWORD: ${WG_PASSWORD}
+      INIT_HOST: ${WG_HOST}
+      INIT_PORT: ${WG_PORT:-51820}
       WG_PORT: ${WG_PORT:-51820}
     ports:
       # The one deliberate new host-facing port in this entire feature set.
