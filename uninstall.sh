@@ -113,7 +113,9 @@ fi
 log_info "removing locally-built MCP bridge images (mcp-filesystem, mcp-git)..."
 if command_exists docker && [[ -f "${REPO_ROOT}/docker-compose.yml" ]]; then
   while IFS= read -r img_id; do
-    [[ -n "${img_id}" ]] && docker image rm "${img_id}" >/dev/null 2>&1 || true
+    if [[ -n "${img_id}" ]]; then
+      docker image rm "${img_id}" >/dev/null 2>&1 || true
+    fi
   done < <(cd "${REPO_ROOT}" && docker compose images -q mcp-filesystem mcp-git 2>/dev/null | sort -u)
 fi
 
