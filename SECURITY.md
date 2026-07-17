@@ -34,11 +34,13 @@ A self-hosted AI-platform backend layer (observability, shared memory, and an MC
 
 ### Access path
 
-```
+```text
 client device --WireGuard VPN--> forgeops_internal --> mcp-gateway --bearer token--> tools/memory
 ```
 
-An internet port scan against this VPS sees exactly three things: SSH (key-only), 80/443 (Caddy's existing public sites), and the WireGuard UDP port. Nothing else — not Grafana, not the MCP gateway, not any individual MCP server — ever receives a `ports:` mapping. `verify.sh`'s `check_mcp_reachable_only_via_vpn` fails loudly if that's ever violated.
+An internet port scan against this VPS sees exactly three things: SSH (key-only), 80/443 (Caddy's existing public sites), and the WireGuard UDP port — `wireguard` is the only *new* service in this layer with a direct `ports:` mapping to the host by default. `verify.sh`'s `check_mcp_reachable_only_via_vpn` fails loudly if that's ever violated.
+
+That is a narrower claim than "nothing in this layer can ever be reached publicly," and it's worth being precise about the difference. No service in this layer other than WireGuard receives its own `ports:` mapping — but `EXPOSE_GRAFANA=true` (`.env`, default `false`) gives Grafana an *indirect* public route through Caddy, the same opt-in pattern as `EXPOSE_PORTAINER`/`EXPOSE_UPTIME_KUMA`: Caddy already holds 80/443 for its own existing public sites, so turning that flag on doesn't open a new host port, it adds a `grafana.<DOMAIN>` site block to Caddy's existing ones. See `docs/OBSERVABILITY.md` for the resulting caveat (Grafana's admin password reuses `WG_PASSWORD` by default, which stops being a safe assumption once Grafana is public). The MCP gateway and the individual MCP servers (`mcp-filesystem`/`mcp-git`/`mcp-postgres`/`mem0-mcp`) have no `EXPOSE_*` flag at all — there is no supported way to give any of them a public Caddy route; reaching them always requires the WireGuard tunnel.
 
 ### Layered controls
 
