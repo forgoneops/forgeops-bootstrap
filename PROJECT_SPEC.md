@@ -1,10 +1,12 @@
 # ForgeOps Bootstrap — Project Specification
 
-**Purpose**
+## Purpose
 
 ForgeOps Bootstrap is a production-grade infrastructure repository designed to provision, configure, maintain, migrate, verify, and update Linux VPS servers using a single, repeatable workflow.
 
 This repository is the permanent foundation for all future VPS deployments. It is never a demo, tutorial, proof of concept, or experimental project. Every component is suitable for long-term production use.
+
+This document covers two things, in order: the infrastructure layer below (complete, frozen, described in full detail), and the platform being built on top of it (see "Platform Vision" near the end — vision only, not yet implemented).
 
 ## Role
 
@@ -123,6 +125,61 @@ README, Installation Guide (README + this spec), Migration Guide (`MIGRATION.md`
 ## Future Extensions (architectural constraints, not v1 scope)
 
 The v1 architecture (Docker-first, named networks/volumes, Caddy edge, `configs/versions.env` pinning) must not preclude, in future work: ForgeOps, FastAPI, Flask, AI services, Claude Code, Claude Cowork, MCP servers, Android virtual machines (when KVM is available), CI/CD, and development/staging/production environment separation. None of these are implemented, stubbed, or represented by placeholder code in v1.
+
+## Platform Vision (ForgeOps) — vision, not v1 scope
+
+Everything below this line describes where the repository is going, not what exists today. It does not change or supersede any rule above: the infrastructure layer (Docker/Caddy/Postgres/Redis/Portainer/Uptime Kuma, `install.sh`/`verify.sh`/`update.sh`/`migrate.sh`/`uninstall.sh`) is complete and frozen. Do not redesign or replace it except for a genuine production issue.
+
+**Origin note:** this direction started as a narrower effort to cut Claude Code token usage (context compression / token budgeting). That's why "Context" is one of the eight layers below rather than the whole project — the platform grew out from that one problem, it wasn't planned top-down from an 8-layer diagram first.
+
+### Mission
+
+ForgeOps is not an AI assistant, chatbot, or IDE. It is a self-hosted backend that manages context, memory, projects, knowledge, and AI-client integrations, exposed primarily over the Model Context Protocol (MCP) so any compatible client — Claude Code, ChatGPT, Cursor, Continue, Gemini, Cline, future clients — can plug into the same persistent backend. The client is replaceable; the backend is the product.
+
+### Principles
+
+1. **Never reinvent mature OSS.** Integrate and configure existing self-hostable projects before writing custom code for a problem one already solves.
+2. **One problem per component.** No service should try to be two layers at once.
+3. **Git is the source of truth.** Config and state that can live in git, does.
+4. **Docker Compose is mandatory** for every service — no bare-metal service processes.
+5. **Every service is replaceable** — swapping the OSS project behind a layer must not require touching the other layers.
+6. **No cloud dependency.** Everything must be able to run on a VPS, mini PC, NAS, or laptop with nothing but Docker.
+7. **Evolution over rewrites.** Every change is a small, production-ready, reversible pull request — never a bulk rewrite. "No placeholders" applies *within* a shipped PR's stated scope, not as license to build all eight layers in one PR.
+
+### The eight layers
+
+| # | Layer | Responsibility | Status |
+| - | ----- | --------------- | ------ |
+| 1 | Infrastructure | Docker, networking, secrets, storage | **Complete, frozen** (this document, above) |
+| 2 | Knowledge | Git, knowledge base, documentation, indexed/queryable project knowledge | Not started |
+| 3 | Context | Context engine — compression, routing, token budgeting | Not started — this is the layer the project originally grew out of |
+| 4 | Projects | Project/task manager, decisions log, archive | Not started |
+| 5 | Memory | Long-term / semantic memory, knowledge graph | Not started |
+| 6 | Integrations | MCP gateway + servers, GitHub, Google Drive, filesystem | **Next real PR** — see below |
+| 7 | Observability | Logging, metrics, tracing | Not started |
+| 8 | Clients | Claude Code, ChatGPT, Cursor, Continue, Cline, etc. — consumers of layers 1-7, not built by this repo | N/A (external) |
+
+Priority order for build-out (highest first): **1. MCP ecosystem (Layer 6) → 2. Context (Layer 3) → 3. Memory (Layer 5) → 4. Knowledge (Layer 2) → 5. Client integrations (Layer 8, mostly external) → 6. Observability (Layer 7) → 7. Automation.** Layer 6 is first because every other layer is reached through it — nothing plugs in until there's a gateway to plug into.
+
+### OSS candidate evaluation
+
+Full research-backed evaluation of every candidate project considered per layer (what it is, self-hostability, maintenance signal, verdict, and why) lives in [`docs/OSS_EVALUATION.md`](docs/OSS_EVALUATION.md). Summary of confirmed integrate-candidates by layer:
+
+- **Layer 6 (Integrations/MCP):** `IBM/mcp-context-forge` (primary MCP gateway candidate — registry, protocol translation, OTel, K8s-scalable) or `docker/mcp-gateway` (lighter alternative); Anthropic's `modelcontextprotocol/servers` as reference implementations to wrap, not production infra itself; Bifrost (`maximhq/bifrost`) as a separate LLM-provider gateway (distinct concern from the MCP-tool gateway — do not conflate the two).
+- **Layer 5 (Memory):** Letta, Mem0, Cognee, and Graphiti all overlap here — pick one primary rather than running all four (see evaluation doc for the tradeoffs) — plus `gastownhall/beads` for git-backed agent task memory specifically.
+- **Layer 2 (Knowledge):** Graphiti (temporal knowledge graph) is the strongest single candidate.
+- **Layer 7 (Observability):** Langfuse — self-hostable via Docker Compose, purpose-built for LLM tracing/evals.
+- **Automation (cross-cutting, not a numbered layer above but referenced in the mission):** LangGraph (orchestration), OpenHands (autonomous execution), n8n (workflow automation — note its Sustainable Use License is source-available, not OSI-permissive).
+- **Layer 8 (Clients):** Cline is an actively-growing candidate to document support for; Continue is now archived/unmaintained post-acquisition and should not be treated as a dependency, only listed as a client ForgeOps still happens to support.
+- **Rejected / needs verification before reuse:** "vexp" and "Context Mode" both target context-compression but their actual OSS licensing/maturity could not be confirmed from a public repo — verify before adopting either. "Claude Token Optimizer" is not one canonical project; if used, name the specific repo (e.g. `nadimtuhin/claude-token-optimizer`) rather than the generic phrase.
+
+### Non-goals
+
+ForgeOps does not become another ChatGPT clone, another web chat UI, another vector database, or another general-purpose workflow engine. It integrates mature OSS for each of those problems instead of building them from scratch.
+
+### Next real PR
+
+Layer 6 (Integrations/MCP Gateway) is the next PR after this documentation update — not part of this PR. It will stand up one MCP gateway (candidate: `IBM/mcp-context-forge` or `docker/mcp-gateway`) plus a small number of real MCP servers behind it, wired into `docker-compose.yml` as new services on `forgeops_internal`, in Node.js/TypeScript where any glue code is needed, fully working end-to-end with no placeholders — scoped as its own small, reversible, production-ready PR per the principles above.
 
 ## Non-Negotiable Rules
 

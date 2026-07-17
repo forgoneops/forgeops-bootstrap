@@ -24,12 +24,14 @@ Result: nothing from rounds 1 or 2 has regressed — spot-checked the ones most 
 ## Documentation gaps
 
 ### DOC-1
+
 **Severity:** MEDIUM
 **File(s):** `README.md`
 **Explanation:** The Quick Start section says installing "takes 5-10 minutes on a fresh box." Nothing in this repo's history includes an actual timed run of `install.sh` against a real Ubuntu 24.04 VPS — every verification so far has been `bash -n` and `--help`/`--dry-run` smoke tests on this Windows dev machine, which can't run the script for real. The number is a plausible guess (a handful of apt installs, Docker Engine setup, five image pulls), not a measurement, and reads as more authoritative than it is.
 **Proposed fix:** Either drop the number entirely ("takes a few minutes" or no claim at all), or measure it on a real box and keep the number once it's actually true.
 
 ### DOC-2
+
 **Severity:** MEDIUM
 **File(s):** `README.md`
 **Explanation:** The "Example output on a clean install" block was written by hand to illustrate what `verify.sh` produces — it was not captured from an actual run, because (per DOC-1) no real run has happened yet. The label "Example output" is a little ambiguous: it could mean "here's a real example" as easily as "here's an illustration of the format." A reader skimming the README could reasonably take this as evidence the tool has been exercised end-to-end, which it hasn't.
@@ -40,12 +42,14 @@ Result: nothing from rounds 1 or 2 has regressed — spot-checked the ones most 
 ## ShellCheck / style issues
 
 ### STYLE-1
+
 **Severity:** LOW
 **File(s):** `scripts/render_caddyfile.sh`
 **Explanation:** The cleanup pass lowercased routine log/error messages across every script (`"done: ${step}"`, `"backup complete: ..."`, etc.) so that capitals would stand out for genuinely emphasized text. `render_caddyfile.sh`'s last line, `log_ok "Rendered ${OUT}"`, was missed and kept its original capital.
 **Proposed fix:** `log_ok "rendered ${OUT}"`, matching everything else.
 
 ### SC-1
+
 **Severity:** LOW
 **File(s):** `verify.sh`
 **Explanation:** `printf '\n%d passed, %d warnings, %d failed\n\n' ...` always pluralizes "warnings" and "failed," so a report with exactly one warning or one failure reads "1 warnings" / "1 failed." Cosmetic, but noticeable every time it happens.

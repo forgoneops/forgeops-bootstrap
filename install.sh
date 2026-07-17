@@ -51,7 +51,29 @@ STEPS=(
   install_caddy:step_install_caddy:cached
   create_project_directories:step_create_project_directories:cached
   ensure_env_file:ensure_env_file:cached
+  install_wireguard:step_install_wireguard:cached
+  install_observability:step_install_observability:cached
   deploy_docker_stack:step_deploy_docker_stack:always
+  # install_mem0/install_mcp_gateway/reconcile_mcp_postgres_role run their
+  # `docker compose exec postgres psql` role-creation AFTER
+  # deploy_docker_stack on purpose — postgres has to actually be running
+  # for `exec` to work. mcp-postgres itself is already up by this point
+  # (started above) and will simply keep retrying via its restart policy
+  # until the postgres_mcp_ro role that reconcile_mcp_postgres_role
+  # creates/updates actually exists with the current password — a brief,
+  # self-recovering crash-loop rather than a hard ordering dependency, since
+  # Compose has no cross-container "wait for this SQL to run" primitive.
+  #
+  # reconcile_mcp_postgres_role runs in "always" mode, unlike
+  # install_mcp_gateway (cached, one-time bearer-token check + fail2ban
+  # setup) — deploy_docker_stack above already recreates mcp-postgres with
+  # a new connection URI whenever POSTGRES_MCP_RO_PASSWORD changes in .env,
+  # so the actual database role's password has to be reconciled on every
+  # run too, not just the first one, or a rotated password only ever
+  # reaches mcp-postgres's env and never the role itself.
+  install_mem0:step_install_mem0:cached
+  install_mcp_gateway:step_install_mcp_gateway:cached
+  reconcile_mcp_postgres_role:step_reconcile_mcp_postgres_role:always
   configure_backups:step_configure_backups:cached
   configure_automatic_security_updates:step_configure_automatic_security_updates:cached
   configure_log_rotation:step_configure_log_rotation:cached
@@ -85,6 +107,15 @@ for entry in "${STEPS[@]}"; do
     run_step_always "${name}" "${fn}"
   else
     run_step "${name}" "${fn}"
+  fi
+  # Every step after ensure_env_file needs WG_HOST/POSTGRES_*/
+  # MCP_BEARER_TOKEN/etc. in its own environment. Reload on every run
+  # (not just the first, when ensure_env_file actually wrote the file) so
+  # a rerun after hand-editing .env — or after ensure_env_file's own
+  # early-return on an already-existing file — sees current values
+  # instead of nothing at all.
+  if [[ "${name}" == "ensure_env_file" ]]; then
+    load_env_file
   fi
 done
 

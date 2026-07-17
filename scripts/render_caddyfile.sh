@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generates docker/Caddyfile from templates/Caddyfile.template, based on
-# the current .env (DOMAIN, EXPOSE_PORTAINER, EXPOSE_UPTIME_KUMA).
+# the current .env (DOMAIN, EXPOSE_PORTAINER, EXPOSE_UPTIME_KUMA, EXPOSE_GRAFANA).
 #
 # Called by install.sh and update.sh. Safe to run again any time.
 
@@ -44,6 +44,21 @@ EOF
       cat <<EOF
 status.${DOMAIN} {
 	reverse_proxy forgeops_uptime_kuma:3001
+	encode gzip zstd
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+	log
+}
+EOF
+    fi
+    if [[ "${EXPOSE_GRAFANA:-false}" == "true" ]]; then
+      cat <<EOF
+grafana.${DOMAIN} {
+	reverse_proxy forgeops_grafana:3000
 	encode gzip zstd
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

@@ -86,6 +86,7 @@ cp "${VERSIONS_FILE}" "${BACKUP_DIR}/config/versions.env"
 chmod 600 "${BACKUP_DIR}/config/.env"
 
 # 4. Checksum manifest, then archive.
+# shellcheck disable=SC2094  # safe: SHA256SUMS is excluded by -not -name before the redirect truncates it
 ( cd "${BACKUP_DIR}" && find . -type f -not -name SHA256SUMS -exec sha256sum {} \; | sort >SHA256SUMS )
 tar -C "${REPO_ROOT}/backups" -czf "${ARCHIVE}" "${TIMESTAMP}"
 rm -rf "${BACKUP_DIR}"

@@ -195,6 +195,87 @@ check_kvm_availability() {
   fi
 }
 
+check_wireguard() {
+  if docker ps --filter "name=forgeops_wireguard" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_wireguard; then
+    echo "PASS|forgeops_wireguard running"
+  else
+    echo "FAIL|forgeops_wireguard not running"
+  fi
+}
+
+check_observability_stack() {
+  local expected=(forgeops_cadvisor forgeops_prometheus forgeops_grafana)
+  local missing=()
+  for c in "${expected[@]}"; do
+    docker ps --filter "name=${c}" --filter "status=running" --format '{{.Names}}' | grep -q "${c}" || missing+=("${c}")
+  done
+  if (( ${#missing[@]} == 0 )); then
+    echo "PASS|cadvisor, prometheus, grafana all running"
+  else
+    echo "FAIL|not running: ${missing[*]}"
+  fi
+}
+
+check_mem0() {
+  if docker ps --filter "name=forgeops_mem0$" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_mem0; then
+    echo "PASS|forgeops_mem0 running"
+  else
+    echo "WARN|not deployed — source-pinning decision pending, see docs/MEMORY.md"
+  fi
+}
+
+check_mcp_gateway_running() {
+  local expected=(forgeops_mcp_gateway forgeops_mcp_filesystem forgeops_mcp_git forgeops_mcp_postgres)
+  local missing=()
+  for c in "${expected[@]}"; do
+    docker ps --filter "name=${c}" --filter "status=running" --format '{{.Names}}' | grep -q "${c}" || missing+=("${c}")
+  done
+  if (( ${#missing[@]} == 0 )); then
+    echo "PASS|mcp-gateway + filesystem/git/postgres MCP servers all running"
+  else
+    echo "FAIL|not running: ${missing[*]} (mem0-mcp intentionally excluded, see docs/MEMORY.md)"
+  fi
+}
+
+check_mcp_auth() {
+  if ! docker ps --filter "name=forgeops_mcp_gateway" --filter "status=running" --format '{{.Names}}' | grep -q forgeops_mcp_gateway; then
+    echo "WARN|mcp-gateway not running, can't check auth"
+    return
+  fi
+  # Request from inside the internal network (via the caddy container,
+  # which already has wget) with no Authorization header — must get 401.
+  # A 200 here would mean the bearer-token check isn't actually enforcing.
+  local status
+  status="$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T caddy wget -S -O /dev/null http://mcp-gateway:8443/ 2>&1 | grep -oE 'HTTP/[0-9.]+ [0-9]+' | awk '{print $2}' | head -1)"
+  if [[ "${status}" == "401" ]]; then
+    echo "PASS|unauthenticated request correctly rejected (401)"
+  else
+    echo "FAIL|expected 401 for an unauthenticated request, got: ${status:-no response}"
+  fi
+}
+
+check_mcp_reachable_only_via_vpn() {
+  # What this actually checks: none of the MCP-facing containers publish a
+  # host port. That's the honest, locally-verifiable proxy for "not
+  # reachable from the public internet" — a real probe from an external
+  # vantage point is out of scope for a script that runs on the host
+  # itself and isn't something verify.sh can meaningfully simulate. This
+  # check fails loud if that assumption is ever violated (e.g. someone
+  # adds a `ports:` line to one of these services later).
+  local containers=(forgeops_mcp_gateway forgeops_mcp_filesystem forgeops_mcp_git forgeops_mcp_postgres forgeops_mem0_mcp)
+  local exposed=()
+  for c in "${containers[@]}"; do
+    local ports
+    ports="$(docker port "${c}" 2>/dev/null || true)"
+    [[ -n "${ports}" ]] && exposed+=("${c}: ${ports}")
+  done
+  if (( ${#exposed[@]} == 0 )); then
+    echo "PASS|no MCP-facing container publishes a host port"
+  else
+    echo "FAIL|host port(s) published on an MCP-facing container: ${exposed[*]}"
+  fi
+}
+
 check_secrets_integrity() {
   local env_file="${REPO_ROOT}/.env"
   if [[ ! -f "${env_file}" ]]; then

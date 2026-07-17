@@ -89,6 +89,7 @@ remote_projects_dir() {
   # Reads PROJECTS_DIR from the source's own ForgeOps .env, not from
   # $HOME/.env — that's almost never where it actually lives.
   local repo_path="${SOURCE_REPO_PATH:-${SOURCE_REPO_PATH_DEFAULT}}"
+  # shellcheck disable=SC2029  # intentional: repo_path is a local var, expanded client-side into the remote command string
   ssh "${HOST}" "test -f '${repo_path}/.env' && grep -E '^PROJECTS_DIR=' '${repo_path}/.env' | cut -d= -f2- || echo /opt/forgeops/projects"
 }
 
@@ -142,6 +143,7 @@ do_sync() {
       fi
 
       local remote_sha
+      # shellcheck disable=SC2029  # intentional: vol is a local var, expanded client-side into the remote command string
       remote_sha="$(ssh "${HOST}" "docker run --rm -v forgeops_${vol}_data:/from -v /tmp:/to alpine sh -c 'tar czf /to/forgeops_${vol}_data.tar.gz -C /from . && sha256sum /to/forgeops_${vol}_data.tar.gz'" 2>/dev/null | awk '{print $1}')"
       if [[ -z "${remote_sha}" ]]; then
         log_warn "volume forgeops_${vol}_data not on source (or tar failed there), skipping"
@@ -152,9 +154,11 @@ do_sync() {
       if ! scp -q "${HOST}:/tmp/forgeops_${vol}_data.tar.gz" "${LOG_DIR}/"; then
         log_error "scp failed for forgeops_${vol}_data.tar.gz — not synced"
         echo "${vol}:FAILED:scp transfer failed" >>"${status_file}"
+        # shellcheck disable=SC2029  # intentional: vol is a local var, expanded client-side into the remote command string
         ssh "${HOST}" "rm -f /tmp/forgeops_${vol}_data.tar.gz" 2>/dev/null || true
         continue
       fi
+      # shellcheck disable=SC2029  # intentional: vol is a local var, expanded client-side into the remote command string
       ssh "${HOST}" "rm -f /tmp/forgeops_${vol}_data.tar.gz" 2>/dev/null || true
 
       local local_sha
@@ -194,6 +198,7 @@ do_finalize() {
   echo "host=${HOST}" >>"${MIGRATION_STATE}"
 
   log_info "stopping migrated services on ${HOST}..."
+  # shellcheck disable=SC2029  # intentional: SOURCE_REPO_PATH is a local/env var, expanded client-side into the remote command string
   ssh "${HOST}" "cd ${SOURCE_REPO_PATH:-${SOURCE_REPO_PATH_DEFAULT}} && docker compose stop postgres redis portainer uptime-kuma" \
     || die "couldn't stop source containers — aborting, treat them as still running"
   echo "stopped" >>"${MIGRATION_STATE}"
@@ -210,6 +215,7 @@ do_finalize() {
     src_projects="$(remote_projects_dir)"
     dst_projects="${PROJECTS_DIR:-/opt/forgeops/projects}"
     local src_sum dst_sum
+    # shellcheck disable=SC2029  # intentional: src_projects is a local var, expanded client-side into the remote command string
     src_sum="$(ssh "${HOST}" "find '${src_projects}' -type f -exec sha256sum {} \; | sort" | sha256sum | cut -d' ' -f1)"
     dst_sum="$(find "${dst_projects}" -type f -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)"
     if [[ "${src_sum}" != "${dst_sum}" ]]; then
@@ -271,6 +277,7 @@ do_rollback() {
   [[ -n "${host}" ]] || die "state file has no recorded host"
 
   log_warn "restarting migrated services on ${host}..."
+  # shellcheck disable=SC2029  # intentional: SOURCE_REPO_PATH is a local/env var, expanded client-side into the remote command string
   ssh "${host}" "cd ${SOURCE_REPO_PATH:-${SOURCE_REPO_PATH_DEFAULT}} && docker compose start postgres redis portainer uptime-kuma" \
     || die "couldn't restart source containers over SSH — log in and run 'docker compose start postgres redis portainer uptime-kuma' yourself"
 

@@ -26,6 +26,14 @@ volumes:
     name: forgeops_redis_data
   uptime_kuma_data:
     name: forgeops_uptime_kuma_data
+  wireguard_config:
+    name: forgeops_wireguard_config
+  prometheus_data:
+    name: forgeops_prometheus_data
+  grafana_data:
+    name: forgeops_grafana_data
+  mem0_data:
+    name: forgeops_mem0_data
 
 services:
   caddy:
@@ -163,3 +171,422 @@ services:
     command: ["--cleanup", "--no-startup-message", "--run-once"]
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+
+  # --- VPN-gated MCP engine (see SECURITY.md "VPN-gated MCP engine" and
+  # PROJECT_SPEC.md's Platform Vision) --------------------------------------
+  #
+  # Access path for every service below `wireguard`: client device -> WireGuard
+  # VPN tunnel -> forgeops_internal -> service -> bearer-token check (MCP only).
+  # None of them receive a `ports:` mapping — `wireguard` is the only new
+  # host-facing port, exactly mirroring how `caddy` is the only *existing*
+  # service with host ports today. Everything downstream is reachable purely
+  # because WireGuard routes VPN-subnet traffic into forgeops_internal, the
+  # same network Postgres/Redis already sit on with no public route.
+
+  wireguard:
+    image: ${WGEASY_IMAGE:-ghcr.io/wg-easy/wg-easy:15.3.0}
+    container_name: forgeops_wireguard
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *default-logging
+    environment:
+      # wg-easy v15 dropped the v14-era WG_HOST / PASSWORD / PASSWORD_HASH
+      # env vars entirely -- confirmed against wg-easy's own v15 docs (see
+      # docs/VPN_SETUP.md for the exact URLs cited). v15's replacement is
+      # this one-shot "unattended setup" block: INIT_* vars are read only
+      # on the container's very first boot (no existing /etc/wireguard
+      # config), then ignored on every boot after that. To rotate
+      # WG_PASSWORD later, change it inside the admin UI itself -- editing
+      # this block and restarting the container does nothing post-bootstrap.
+      INIT_ENABLED: "true"
+      INIT_USERNAME: "admin"
+      INIT_PASSWORD: ${WG_PASSWORD}
+      INIT_HOST: ${WG_HOST}
+      INIT_PORT: ${WG_PORT:-51820}
+      WG_PORT: ${WG_PORT:-51820}
+    ports:
+      # The one deliberate new host-facing port in this entire feature set.
+      - "${WG_PORT:-51820}:51820/udp"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - wireguard_config:/etc/wireguard
+    networks:
+      - edge      # host UDP port, same reasoning as caddy's edge attachment
+      - internal  # routes VPN traffic into the internal network
+    healthcheck:
+      test: ["CMD", "wg", "show"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  cadvisor:
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.60.5}
+    container_name: forgeops_cadvisor
+    restart: unless-stopped
+    mem_limit: 256m
+    logging: *default-logging
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    # cAdvisor conventionally runs privileged for complete container metrics.
+    # This is the hardened alternative (no privileged, minimal caps) —
+    # exact metric completeness under this cap set wasn't independently
+    # verified this session; if Grafana dashboards show gaps, that's the
+    # first thing to revisit (see docs/OBSERVABILITY.md).
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_PTRACE
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.13.1}
+    container_name: forgeops_prometheus
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *default-logging
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:13.1.0}
+    container_name: forgeops_grafana
+    restart: unless-stopped
+    mem_limit: 256m
+    logging: *default-logging
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${WG_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: "http://localhost:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Mem0 ships no maintained, versioned Docker image upstream (see
+  # configs/versions.env's MEM0_GIT_REF comment) — built from source, pinned
+  # by git ref rather than an image tag. build/mem0-server is populated by
+  # step_install_mem0 (a shallow git clone), not committed to this repo.
+  mem0:
+    build:
+      context: ./build/mem0-server
+    container_name: forgeops_mem0
+    restart: unless-stopped
+    mem_limit: 768m
+    logging: *default-logging
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: mem0
+      POSTGRES_PASSWORD: ${MEM0_DB_PASSWORD}
+      MEM0_EMBEDDER_PROVIDER: ${MEM0_EMBEDDER_PROVIDER:-fastembed}
+      MEM0_USER_ID: ${MEM0_USER_ID:-maintainer}
+    volumes:
+      - mem0_data:/root/.cache   # FastEmbed model cache — avoids re-downloading on every restart
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  mem0-mcp:
+    build:
+      context: ./build/mem0-mcp
+    container_name: forgeops_mem0_mcp
+    restart: unless-stopped
+    mem_limit: 256m
+    logging: *default-logging
+    environment:
+      MEM0_SERVER_URL: http://mem0:8000
+      MEM0_USER_ID: ${MEM0_USER_ID:-maintainer}
+      # Defense in depth: mcp-gateway is the intended path and already
+      # enforces this token, but any other container on forgeops_internal
+      # could in theory reach this service directly by name — this second
+      # check means that path isn't auth-free too. Whether coleam00/mcp-mem0
+      # actually reads/enforces this env var wasn't independently confirmed
+      # this session (see docs/MEMORY.md) — verify before relying on it as
+      # the sole internal-network control.
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+      PORT: "8050"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    depends_on:
+      mem0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8050/sse || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  mcp-filesystem:
+    build:
+      context: ./docker/mcp-stdio-bridge
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
+        MCP_PROXY_VERSION: ${MCP_PROXY_VERSION:-0.12.0}
+        MCP_SERVER_PACKAGE: "@modelcontextprotocol/server-filesystem"
+        MCP_SERVER_VERSION: ${MCP_FILESYSTEM_SERVER_VERSION:-2026.7.10}
+        # Task 7: the console bin this scoped npm package installs -- not
+        # the same string as MCP_SERVER_PACKAGE. Verified via `npm view
+        # @modelcontextprotocol/server-filesystem@2026.7.10 bin` this
+        # session: { "mcp-server-filesystem": "dist/index.js" }.
+        MCP_SERVER_BIN: "mcp-server-filesystem"
+    container_name: forgeops_mcp_filesystem
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *default-logging
+    command: ["/projects"]  # scopes the filesystem server to PROJECTS_DIR, nothing else
+    volumes:
+      - ${PROJECTS_DIR:-/opt/forgeops/projects}:/projects
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    networks:
+      - internal
+    # Neither bridge Dockerfile installs wget (only nodejs/npm resp.
+    # git/uv, per their own comment blocks) -- wget --spider here would
+    # fail with "exec: wget: not found" and mask any real health signal
+    # behind a false negative. python3 is already present because both
+    # images are FROM python:3.12-slim (mcp-proxy itself is a pip package),
+    # so this needs no new dependency. urllib opens the connection and
+    # reads one byte off the SSE stream to confirm mcp-proxy is actually
+    # accepting connections and serving on /sse, then closes it -- doesn't
+    # wait for the stream to end (it doesn't).
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/sse', timeout=3); r.read(1); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  mcp-git:
+    build:
+      context: ./docker/mcp-stdio-bridge-python
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
+        MCP_PROXY_VERSION: ${MCP_PROXY_VERSION:-0.12.0}
+        UV_VERSION: ${UV_VERSION:-0.4.29}
+        MCP_SERVER_PACKAGE: ${MCP_GIT_SERVER_PACKAGE:-mcp-server-git}
+        MCP_SERVER_VERSION: ${MCP_GIT_SERVER_VERSION:-2026.7.10}
+        # Task 7: the console script this PyPI package installs. Matches
+        # the package name here (upstream pyproject.toml: `[project.scripts]
+        # mcp-server-git = "mcp_server_git:main"`), kept as its own arg
+        # rather than reused from MCP_SERVER_PACKAGE since that match isn't
+        # guaranteed for PyPI packages in general.
+        MCP_SERVER_BIN: "mcp-server-git"
+    container_name: forgeops_mcp_git
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *default-logging
+    command: ["--repository", "/projects"]
+    volumes:
+      - ${PROJECTS_DIR:-/opt/forgeops/projects}:/projects
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    # Discovered via Task 5's real `docker compose up` cycle (not caught by
+    # Task 4's standalone `docker run`, which didn't hit this because it
+    # tested a single container in isolation and this failure only
+    # manifests once mcp-proxy actually tries to spawn its stdio child):
+    # `uvx` needs to write under the invoking user's home dir and
+    # crash-loops otherwise -- first hit was `.cache/uv` ("Read-only file
+    # system"), and after tmpfs-mounting just that path, uv's *next* write
+    # target surfaced: `.local/share/uv/tools` (where uvx installs the tool
+    # it runs). Rather than chase every subpath uv might touch across
+    # future uv versions, tmpfs the whole home dir once. mcp-filesystem's
+    # sibling uses npx instead of uvx and doesn't hit an equivalent
+    # failure, so only mcp-git needs this. tmpfs (ephemeral, in-memory)
+    # rather than a named volume or dropping read_only entirely -- mirrors
+    # the existing prometheus service ("tmpfs: - /tmp") -- keeps
+    # read_only: true and cap_drop: ALL intact; none of this needs to
+    # survive a restart (uvx re-fetches/reinstalls the tool each start
+    # regardless). Explicit mode via the fstab-style inline option: this
+    # container runs as non-root uid 10001 (mcpbridge, see the Dockerfile),
+    # and a bare tmpfs mount with no mode defaults to root-owned 0755 --
+    # confirmed the hard way (the plain "/home/mcpbridge" version of this
+    # mount produced "Permission denied" instead of the earlier "Read-only
+    # file system"). 1777 mirrors ordinary /tmp semantics: world-writable +
+    # sticky bit, so mcpbridge can create files under it same as any other
+    # non-root user writing to /tmp. (The mapping-style long syntax --
+    # `tmpfs: - target: ... / tmpfs: mode: ...` -- isn't accepted by the
+    # installed Compose v5.3.1: "unexpected type map[string]interface {}"
+    # -- so this uses the older colon-separated short form instead.)
+    tmpfs:
+      - /home/mcpbridge:mode=1777
+    networks:
+      - internal
+    # Same fix and rationale as mcp-filesystem's healthcheck above: neither
+    # bridge Dockerfile installs wget, python3 is already present (base
+    # image is python:3.12-slim), so this needs no new dependency.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/sse', timeout=3); r.read(1); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # The ONE MCP endpoint — see configs/mcp-gateway/Caddyfile. No `ports:`
+  # mapping: reachable only from something already on forgeops_internal,
+  # which in practice means the wireguard container routing VPN traffic in.
+  mcp-gateway:
+    image: ${CADDY_IMAGE:-caddy:2.8-alpine}
+    container_name: forgeops_mcp_gateway
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *default-logging
+    environment:
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+    volumes:
+      - ./configs/mcp-gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./logs/mcp-gateway:/var/log/mcp-gateway
+    cap_drop:
+      - ALL
+    # Discovered via Task 5's real `docker compose up` cycle: caddy:2.8-alpine's
+    # /usr/bin/caddy binary ships with a file capability baked in
+    # (`getcap` reports `cap_net_bind_service=ep`). Combined with cap_drop:
+    # ALL + no-new-privileges below, the kernel refused the container's
+    # entrypoint exec itself with "exec /usr/bin/caddy: operation not
+    # permitted" -- no-new-privileges blocks any execve() that would grant
+    # privileges from a file's capability set that aren't already in the
+    # process's permitted set, which cap_drop: ALL guaranteed would never be
+    # true. This crash-looped mcp-gateway (255) before it ever read the
+    # Caddyfile. Adding the one capability the binary's file-caps declare
+    # back via cap_add satisfies that check; caddy still only binds :8443
+    # (an unprivileged port ≥ 1024) so the capability is never actually
+    # exercised at runtime, this only unblocks the exec.
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    depends_on:
+      # mem0-mcp deliberately excluded — not yet in step_deploy_docker_stack's
+      # service list (see step_install_mem0). The Caddyfile's /mem0/* route
+      # still points at it; that route just 502s until mem0-mcp actually
+      # exists, everything else works today.
+      - mcp-filesystem
+      - mcp-git
+      - mcp-postgres
+    healthcheck:
+      # Hits the loopback-only, auth-exempt /healthz route (see
+      # configs/mcp-gateway/Caddyfile) instead of "/" -- every other path,
+      # including "/", correctly 401s an unauthenticated request, which used
+      # to make this healthcheck fail forever even when the gateway was
+      # working fine. /healthz stays inaccessible from outside this
+      # container (the Caddyfile's remote_ip 127.0.0.1 match), so this isn't
+      # an auth bypass, just an in-container liveness probe.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # READ-ONLY by design (SECURITY.md non-negotiable) — the dedicated
+  # postgres_mcp_ro role created by step_install_mcp_gateway has no write
+  # grants at all, so this is defense in depth on top of
+  # --access-mode=restricted, not the only thing preventing writes.
+  mcp-postgres:
+    image: ${POSTGRES_MCP_IMAGE:-crystaldba/postgres-mcp:0.3.0}
+    container_name: forgeops_mcp_postgres
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *default-logging
+    environment:
+      DATABASE_URI: postgresql://postgres_mcp_ro:${POSTGRES_MCP_RO_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    command: ["--access-mode=restricted", "--transport=sse"]
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Task 8: crystaldba/postgres-mcp:0.3.0 ships no wget (and no curl) --
+    # confirmed via `docker exec ... which wget` (not found) during the
+    # full-chain validation run, which left this healthcheck permanently
+    # failing ("/bin/sh: 1: wget: not found") even once the server was up
+    # and serving. python3 (via the image's own /app/.venv) is present, so
+    # this uses the same urllib one-byte-read probe already used for
+    # mcp-filesystem/mcp-git's healthchecks above, for the same reason:
+    # opens the SSE stream, reads one byte to confirm mcp-postgres is
+    # actually accepting connections, then closes it without waiting for
+    # the stream to end.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/sse', timeout=3); r.read(1); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
