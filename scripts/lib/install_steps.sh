@@ -128,7 +128,7 @@ step_deploy_docker_stack() {
     POSTGRES_MCP_IMAGE="${POSTGRES_MCP_IMAGE}" \
     PYTHON_BASE_IMAGE="${PYTHON_BASE_IMAGE}" MCP_PROXY_VERSION="${MCP_PROXY_VERSION}" \
     MCP_FILESYSTEM_SERVER_VERSION="${MCP_FILESYSTEM_SERVER_VERSION}" \
-    MCP_GIT_SERVER_VERSION="${MCP_GIT_SERVER_VERSION:-}" \
+    MCP_GIT_SERVER_VERSION="${MCP_GIT_SERVER_VERSION}" \
     docker compose up -d --build \
       caddy portainer postgres redis uptime-kuma \
       wireguard cadvisor prometheus grafana \
@@ -199,25 +199,10 @@ step_install_mem0() {
 }
 
 step_install_mcp_gateway() {
-  # Dedicated READ-ONLY Postgres role — no write grants at all, so this is
-  # a real control, not just postgres-mcp's own --access-mode=restricted
-  # flag (defense in depth, see SECURITY.md).
-  docker compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 <<SQL
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres_mcp_ro') THEN
-    CREATE ROLE postgres_mcp_ro LOGIN PASSWORD '${POSTGRES_MCP_RO_PASSWORD}';
-  ELSE
-    ALTER ROLE postgres_mcp_ro PASSWORD '${POSTGRES_MCP_RO_PASSWORD}';
-  END IF;
-END
-\$\$;
-GRANT CONNECT ON DATABASE ${POSTGRES_DB} TO postgres_mcp_ro;
-GRANT USAGE ON SCHEMA public TO postgres_mcp_ro;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO postgres_mcp_ro;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO postgres_mcp_ro;
-SQL
-
+  # One-time setup only. Postgres role provisioning used to live here too,
+  # but that made it a `cached` step that only ever ran once — see
+  # step_reconcile_mcp_postgres_role below (STEPS array, install.sh) for
+  # why the role itself needs to be reconciled on every run instead.
   if [[ -z "${MCP_BEARER_TOKEN:-}" || "${MCP_BEARER_TOKEN}" == "CHANGEME_MCP_BEARER_TOKEN" ]]; then
     die "MCP_BEARER_TOKEN not set in .env — ensure_env_file should have generated one; check .env manually"
   fi
@@ -240,10 +225,61 @@ bantime = 1h
 findtime = 10m
 EOF
   systemctl restart fail2ban
+}
 
-  # mcp-postgres was already started by step_deploy_docker_stack and has
-  # been crash-looping on a role that didn't exist yet — restart it now
-  # instead of waiting out its backoff.
+# Runs on EVERY install.sh invocation (`always` mode in install.sh's STEPS
+# array), never cached. Reason: step_deploy_docker_stack's `docker compose
+# up -d --build` (also `always`, and it runs before this step) recreates
+# mcp-postgres whenever its config changes -- including when
+# POSTGRES_MCP_RO_PASSWORD changes in .env, since that value feeds
+# mcp-postgres's own connection URI. If role provisioning only ran once
+# (the old behavior, folded into the now-cached step_install_mcp_gateway
+# above), a rotated password would reach mcp-postgres's connection string
+# immediately but the actual database role would keep its original
+# password forever -- mcp-postgres would crash-loop on auth failure with
+# no path to recovery short of a manual psql session.
+#
+# Neither the password nor the database name is interpolated directly
+# into SQL text. `\getenv` reads the password from this function's own
+# process environment (set via `export` below, read by psql's -e env,
+# never a `-v name=value` CLI flag or SQL literal) -- confirmed via `ps`
+# during a live test that the value never appears in any process's argv.
+# `:'ro_password'` (SQL-literal quoting) and `:"db_name"` (SQL-identifier
+# quoting) are psql's own client-side substitution forms -- safe for any
+# byte sequence the password/db name might contain (quotes, spaces,
+# backslashes, `$`, `;` all verified against a live Postgres container
+# this session). This deliberately avoids a PL/pgSQL `DO $$ ... $$` block:
+# confirmed empirically that psql's `:'name'`/`:"name"` substitution is
+# NOT applied inside a dollar-quoted body, so the create-or-alter branch
+# is written with psql's own `\gset`/`\if`/`\else`/`\endif` meta-commands
+# instead.
+step_reconcile_mcp_postgres_role() {
+  local ro_password="${POSTGRES_MCP_RO_PASSWORD:?POSTGRES_MCP_RO_PASSWORD must be set in .env}"
+  export PGPASS_RO="${ro_password}"
+  # Dedicated READ-ONLY Postgres role — no write grants at all, so this is
+  # a real control, not just postgres-mcp's own --access-mode=restricted
+  # flag (defense in depth, see SECURITY.md).
+  docker compose exec -T -e PGPASS_RO postgres \
+    psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -v db_name="${POSTGRES_DB}" <<'SQL'
+\getenv ro_password PGPASS_RO
+SELECT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres_mcp_ro') AS role_exists \gset
+\if :role_exists
+  ALTER ROLE postgres_mcp_ro PASSWORD :'ro_password';
+\else
+  CREATE ROLE postgres_mcp_ro LOGIN PASSWORD :'ro_password';
+\endif
+GRANT CONNECT ON DATABASE :"db_name" TO postgres_mcp_ro;
+GRANT USAGE ON SCHEMA public TO postgres_mcp_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO postgres_mcp_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO postgres_mcp_ro;
+SQL
+  unset PGPASS_RO
+
+  # mcp-postgres may already be crash-looping on a role that didn't exist
+  # yet, or on a password that just changed above — restart it now instead
+  # of waiting out its backoff. Not fatal if this fails; mcp-postgres's own
+  # restart policy will keep retrying regardless (see the STEPS array
+  # comment in install.sh).
   ( cd "${REPO_ROOT}" && docker compose restart mcp-postgres ) || true
 }
 
