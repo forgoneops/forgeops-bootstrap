@@ -146,6 +146,22 @@ load_versions() {
   source "${VERSIONS_FILE}"
 }
 
+# Secrets ensure_env_file is allowed to randomize on first run. Deliberately
+# an explicit allowlist, not a broad `=CHANGEME_*` regex match: WG_HOST also
+# ships as CHANGEME_WG_HOST in .env.example, but it's a real hostname/IP the
+# operator must supply, not a secret -- randomizing it used to hand
+# WireGuard a fabricated endpoint that looked resolved but wasn't.
+# step_install_wireguard (scripts/lib/install_steps.sh) refuses to proceed
+# (exit 75) until a real value is set; see docs/VPN_SETUP.md.
+ENV_SECRET_VARS=(
+  POSTGRES_PASSWORD
+  REDIS_PASSWORD
+  WG_PASSWORD
+  MCP_BEARER_TOKEN
+  MEM0_DB_PASSWORD
+  POSTGRES_MCP_RO_PASSWORD
+)
+
 ensure_env_file() {
   if [[ -f "${ENV_FILE}" ]]; then
     log_info ".env already exists, leaving it alone"
@@ -154,14 +170,34 @@ ensure_env_file() {
   [[ -r "${ENV_EXAMPLE}" ]] || die "missing ${ENV_EXAMPLE}, can't generate .env"
   log_info "generating .env with fresh secrets..."
   cp "${ENV_EXAMPLE}" "${ENV_FILE}"
-  local placeholder
-  while IFS= read -r placeholder; do
-    local secret
-    secret="$(openssl rand -hex 32)"
-    sed -i "s|${placeholder}|${secret}|" "${ENV_FILE}"
-  done < <(grep -oE '=CHANGEME_[A-Za-z0-9_]*' "${ENV_FILE}" | sed 's/^=//' | sort -u)
+  local var placeholder secret
+  for var in "${ENV_SECRET_VARS[@]}"; do
+    placeholder="CHANGEME_${var}"
+    if grep -qE "^${var}=${placeholder}\$" "${ENV_FILE}"; then
+      secret="$(openssl rand -hex 32)"
+      sed -i "s|^${var}=${placeholder}\$|${var}=${secret}|" "${ENV_FILE}"
+    fi
+  done
   chmod 600 "${ENV_FILE}"
   log_ok ".env ready (mode 600)"
+}
+
+# Loads .env into the current shell's exported environment so install.sh's
+# step functions (step_install_wireguard, step_install_mcp_gateway,
+# step_reconcile_mcp_postgres_role, etc.) see WG_HOST/POSTGRES_*/
+# MCP_BEARER_TOKEN/etc. without each one re-sourcing the file itself.
+# Called after ensure_env_file on every install.sh run, including reruns --
+# `set -a` / `set +a` auto-exports whatever ensure_env_file just wrote (or
+# whatever the operator has since hand-edited into .env) rather than
+# leaving later steps to rely on a stale export from a previous run. Never
+# echoes the file's contents -- nothing here logs secret values.
+load_env_file() {
+  [[ -r "${ENV_FILE}" ]] || die "missing ${ENV_FILE} — ensure_env_file should have created it"
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +a
+  log_info ".env loaded"
 }
 
 command_exists() {
