@@ -7,7 +7,7 @@ ForgeOps Bootstrap has two layers:
 1. **Host layer** — configured directly on the Ubuntu VPS by `install.sh` via apt: Docker Engine, base tooling (Git, Python, uv, Node.js, jq, ripgrep, etc.), UFW, Fail2Ban, unattended-upgrades, SSH hardening, logrotate.
 2. **Service layer** — everything that reasonably can run in a container does, defined in a single `docker-compose.yml` and orchestrated by `install.sh`/`update.sh`/`uninstall.sh`.
 
-```
+```text
                      ┌─────────────────────────────┐
   Internet ───80/443─▶          Caddy               │  forgeops_edge (public)
                      └──────────────┬───────────────┘
@@ -70,7 +70,7 @@ The Docker-first, named-network/volume, Caddy-edge, pinned-version architecture 
 
 Everything above this section is Layer 1, complete and frozen. The platform being built on top of it is organized into eight layers; layers 2-8 are not implemented yet. This section exists so later PRs land in a known slot instead of each one re-deciding the shape of the whole system.
 
-```
+```text
 Layer 8  Clients         Claude Code · ChatGPT · Cursor · Continue · Cline · future MCP clients   (external — not built here)
 Layer 7  Observability   Logging · Metrics · Tracing                                              (candidate: Langfuse)
 Layer 6  Integrations    MCP Gateway · GitHub · Google Drive · Filesystem                          ← next real PR

@@ -3,5 +3,10 @@
   "MD013": false,
   // Allow inline HTML is not used, but disable the "first line must be a
   // top-level heading" rule for files that open with a badge or note.
-  "MD041": false
+  "MD041": false,
+  // CHANGELOG.md repeats "### Added"/"### Changed"/etc. under every
+  // version heading -- that's the Keep a Changelog convention, not a
+  // defect. `siblings_only` only flags duplicates at the same nesting
+  // level under the same parent, so distinct version sections stay fine.
+  "MD024": { "siblings_only": true }
 }

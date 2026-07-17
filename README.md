@@ -24,7 +24,7 @@ Check it worked:
 
 Example output on a clean install:
 
-```
+```text
 ForgeOps Bootstrap — Health Report (2026-07-14T12:03:01Z)
 
   PASS   Operating System     Ubuntu 24.04.1 LTS

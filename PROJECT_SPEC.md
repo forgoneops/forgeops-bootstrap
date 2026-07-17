@@ -1,6 +1,6 @@
 # ForgeOps Bootstrap — Project Specification
 
-**Purpose**
+## Purpose
 
 ForgeOps Bootstrap is a production-grade infrastructure repository designed to provision, configure, maintain, migrate, verify, and update Linux VPS servers using a single, repeatable workflow.
 
