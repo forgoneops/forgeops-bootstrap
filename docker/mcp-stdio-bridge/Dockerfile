@@ -50,9 +50,14 @@
 # runtime registry resolution, no network access needed from inside
 # forgeops_internal ever again.
 
-ARG PYTHON_BASE_IMAGE=python:3.12-slim
+ARG PYTHON_BASE_IMAGE=python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 FROM ${PYTHON_BASE_IMAGE}
 
+# nodejs/npm/ca-certificates are NOT individually version-pinned -- they
+# resolve to whatever's current in PYTHON_BASE_IMAGE's apt snapshot at
+# build time (that image is itself pinned by digest above). See
+# configs/versions.env's note on this file for why exact apt-package
+# pinning isn't done here.
 ARG MCP_PROXY_VERSION
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends nodejs npm ca-certificates \
@@ -68,14 +73,18 @@ ENV MCP_SERVER_BIN=${MCP_SERVER_BIN}
 # time (see the TASK 7 note above). Runs as root (before USER mcpbridge
 # below) so the package lands in npm's default global prefix for this
 # apt-installed nodejs/npm (/usr, on Debian) -- already on every user's
-# PATH, no extra ENV plumbing needed. MCP_SERVER_VERSION is still optional:
-# when set, npm resolves the exact pinned release ("pkg@version"); when
-# blank, npm resolves latest -- but either way that resolution now happens
-# once, at build time, on a host with egress, and is baked into the image.
+# PATH, no extra ENV plumbing needed. MCP_SERVER_VERSION is REQUIRED
+# (build fails otherwise, see the explicit check below) -- there is no
+# fallback to an unversioned/latest npm resolution anymore: an accidentally
+# blank configs/versions.env entry used to silently mean "whatever npm
+# resolves as latest today," baked into the image with no record of what
+# version that actually was.
 RUN set -e; \
-    pkg="$MCP_SERVER_PACKAGE"; \
-    if [ -n "$MCP_SERVER_VERSION" ]; then pkg="$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION"; fi; \
-    npm install -g "$pkg"
+    if [ -z "$MCP_SERVER_VERSION" ]; then \
+      echo "MCP_SERVER_VERSION build-arg is required (see configs/versions.env) — refusing to install an unpinned/latest package" >&2; \
+      exit 1; \
+    fi; \
+    npm install -g "$MCP_SERVER_PACKAGE@$MCP_SERVER_VERSION"
 
 # Runs as a non-root user — the stdio MCP server this wraps only ever needs
 # read/write access to a bind-mounted directory (see docker-compose.yml's

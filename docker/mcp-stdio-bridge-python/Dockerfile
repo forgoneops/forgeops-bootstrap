@@ -52,7 +52,7 @@
 # script directly: no uvx, no runtime PyPI resolution, no network access
 # needed from inside forgeops_internal ever again.
 
-ARG PYTHON_BASE_IMAGE=python:3.12-slim
+ARG PYTHON_BASE_IMAGE=python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 FROM ${PYTHON_BASE_IMAGE}
 
 ARG MCP_PROXY_VERSION
@@ -61,6 +61,12 @@ ARG UV_VERSION
 # mcp-server-git -- it shells out to the local git executable to operate on
 # the bind-mounted repository, the same way mcp-filesystem's Dockerfile
 # installs nodejs/npm as a runtime dependency of npx.
+#
+# git/ca-certificates are NOT individually version-pinned -- they resolve
+# to whatever's current in PYTHON_BASE_IMAGE's apt snapshot at build time
+# (that image is itself pinned by digest above). See configs/versions.env's
+# note on the sibling Dockerfile for why exact apt-package pinning isn't
+# done here.
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -84,13 +90,20 @@ ENV MCP_SERVER_BIN=${MCP_SERVER_BIN}
 # empty runtime tmpfs mount would immediately hide it again. chmod at the
 # end ensures the non-root mcpbridge user (USER below) can execute what
 # root just installed.
+# MCP_SERVER_VERSION is REQUIRED (build fails otherwise, see the explicit
+# check below) -- no fallback to an unversioned/latest PyPI resolution: an
+# accidentally blank configs/versions.env entry used to silently mean
+# "whatever uv resolves as latest today," baked into the image with no
+# record of what version that actually was.
 ENV UV_TOOL_DIR=/opt/uv-tools
 ENV UV_TOOL_BIN_DIR=/opt/uv-tools/bin
 ENV PATH="/opt/uv-tools/bin:${PATH}"
 RUN set -e; \
-    pkg="$MCP_SERVER_PACKAGE"; \
-    if [ -n "$MCP_SERVER_VERSION" ]; then pkg="$MCP_SERVER_PACKAGE==$MCP_SERVER_VERSION"; fi; \
-    uv tool install "$pkg"; \
+    if [ -z "$MCP_SERVER_VERSION" ]; then \
+      echo "MCP_SERVER_VERSION build-arg is required (see configs/versions.env) — refusing to install an unpinned/latest package" >&2; \
+      exit 1; \
+    fi; \
+    uv tool install "$MCP_SERVER_PACKAGE==$MCP_SERVER_VERSION"; \
     chmod -R a+rX /opt/uv-tools
 
 # Runs as a non-root user — same rationale as ../mcp-stdio-bridge/Dockerfile:
